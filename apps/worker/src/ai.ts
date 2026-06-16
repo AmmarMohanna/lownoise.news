@@ -7,6 +7,7 @@ export class OpenAIGatewaySummaryAdapter implements SummaryAdapter {
       accountId: string;
       gatewayId: string;
       apiKey: string;
+      gatewayAuthToken?: string;
       model: string;
       fetcher?: typeof fetch;
     }
@@ -20,6 +21,9 @@ export class OpenAIGatewaySummaryAdapter implements SummaryAdapter {
         method: "POST",
         headers: {
           authorization: `Bearer ${this.options.apiKey}`,
+          ...(this.options.gatewayAuthToken
+            ? { "cf-aig-authorization": `Bearer ${this.options.gatewayAuthToken}` }
+            : {}),
           "content-type": "application/json"
         },
         body: JSON.stringify({
@@ -56,6 +60,7 @@ export function createSummaryAdapterFromEnv(env: Env): OpenAIGatewaySummaryAdapt
     accountId: env.CLOUDFLARE_ACCOUNT_ID,
     gatewayId: env.CLOUDFLARE_AI_GATEWAY_ID,
     apiKey: env.OPENAI_API_KEY,
+    gatewayAuthToken: env.CLOUDFLARE_AI_GATEWAY_TOKEN,
     model: env.OPENAI_MODEL ?? "gpt-4.1-mini"
   });
 }

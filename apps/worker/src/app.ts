@@ -211,7 +211,20 @@ export function createApp(options: AppOptions = {}) {
   app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
 
   app.all("*", async (c) => {
-    if (c.env.ASSETS) return c.env.ASSETS.fetch(c.req.raw);
+    if (c.env.ASSETS) {
+      const assetResponse = await c.env.ASSETS.fetch(c.req.raw);
+      if (assetResponse.status !== 404 || c.req.method !== "GET") return assetResponse;
+
+      const accept = c.req.header("accept") ?? "";
+      const requestPath = new URL(c.req.url).pathname;
+      const hasFileExtension = /\/[^/]+\.[^/]+$/.test(requestPath);
+      if (hasFileExtension && !accept.includes("text/html")) return assetResponse;
+
+      const indexUrl = new URL(c.req.url);
+      indexUrl.pathname = "/";
+      indexUrl.search = "";
+      return c.env.ASSETS.fetch(new Request(indexUrl, c.req.raw));
+    }
     return c.text("LowNoise.news Worker is running. Build apps/web to serve the UI.", 200);
   });
 

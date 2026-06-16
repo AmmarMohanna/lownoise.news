@@ -40,6 +40,9 @@ async function createEmbedding(env: Env, input: string): Promise<number[]> {
       method: "POST",
       headers: {
         authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        ...(env.CLOUDFLARE_AI_GATEWAY_TOKEN
+          ? { "cf-aig-authorization": `Bearer ${env.CLOUDFLARE_AI_GATEWAY_TOKEN}` }
+          : {}),
         "content-type": "application/json"
       },
       body: JSON.stringify({

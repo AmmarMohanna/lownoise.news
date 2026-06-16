@@ -20,6 +20,7 @@ export interface Env {
   PUBLIC_WEB_BASE_URL?: string;
   CLOUDFLARE_ACCOUNT_ID?: string;
   CLOUDFLARE_AI_GATEWAY_ID?: string;
+  CLOUDFLARE_AI_GATEWAY_TOKEN?: string;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_EMBEDDING_MODEL?: string;
