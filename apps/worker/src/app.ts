@@ -141,6 +141,14 @@ function buildManifestPayload(input: {
 export function createApp(options: AppOptions = {}) {
   const app = new Hono<{ Bindings: Env; Variables: Variables }>();
 
+  app.onError((error, c) => {
+    if (error instanceof z.ZodError) {
+      return c.json({ error: error.issues[0]?.message ?? "invalid request" }, 400);
+    }
+    console.error(error);
+    return c.json({ error: "internal server error" }, 500);
+  });
+
   const repoFor = (c: { env: Env }): Repository => options.repository ?? new D1Repository(c.env.DB);
   const bucketFor = (c: { env: Env }) => options.bucket ?? c.env.RAW_ARCHIVE;
   const queueFor = (c: { env: Env }) => options.queue ?? c.env.PROCESSING_QUEUE;
@@ -215,7 +223,12 @@ export function createApp(options: AppOptions = {}) {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : "could not create account" }, 409);
     }
-    await sendVerificationToken(repo, c.env, account);
+    try {
+      await sendVerificationToken(repo, c.env, account);
+    } catch (error) {
+      await repo.deleteAccount(account.id);
+      return c.json({ error: "could not send verification email" }, 502);
+    }
     return c.json({ ok: true });
   });
 

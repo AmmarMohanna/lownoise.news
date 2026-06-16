@@ -33,11 +33,18 @@ async function sendAuthEmail(
   const url = new URL(input.path, env.PUBLIC_WEB_BASE_URL || "https://lownoise.news").toString();
   await env.EMAIL.send({
     to: input.to,
-    from: env.EMAIL_FROM,
+    from: parseEmailAddress(env.EMAIL_FROM),
     subject: input.subject,
     text: `${input.text}\n\n${url}\n\nThis link expires automatically.`,
     html: `<p>${escapeHtml(input.text)}</p><p><a href="${url}">${url}</a></p><p>This link expires automatically.</p>`
   });
+}
+
+function parseEmailAddress(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(.+?)\s*<([^<>]+)>$/);
+  if (!match) return trimmed;
+  return match[2].trim();
 }
 
 function escapeHtml(value: string): string {

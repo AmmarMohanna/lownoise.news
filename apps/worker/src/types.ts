@@ -108,6 +108,7 @@ export interface Repository {
     passwordHash: string;
     emailVerifiedAt?: string;
   }, now?: Date): Promise<AccountRecord>;
+  deleteAccount(id: string, now?: Date): Promise<void>;
   listAccounts(): Promise<AccountWithStats[]>;
   getAccountById(id: string): Promise<AccountRecord | null>;
   getAccountByEmail(email: string): Promise<(AccountRecord & { passwordHash: string }) | null>;

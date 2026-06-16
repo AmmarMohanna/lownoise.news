@@ -178,6 +178,10 @@ export class D1Repository implements Repository {
     return rows.map(rowToAccountWithStats);
   }
 
+  async deleteAccount(id: string): Promise<void> {
+    await this.db.prepare("DELETE FROM accounts WHERE id = ?").bind(id).run();
+  }
+
   async getAccountById(id: string): Promise<AccountRecord | null> {
     const row = await first<AccountRow>(this.db.prepare("SELECT * FROM accounts WHERE id = ?").bind(id));
     return row ? rowToAccount(row) : null;
@@ -858,6 +862,22 @@ export class InMemoryRepository implements Repository {
       ...rowlessAccount(account),
       briefingCount: Array.from(this.briefings.values()).filter((briefing) => briefing.ownerAccountId === account.id).length
     }));
+  }
+
+  async deleteAccount(id: string): Promise<void> {
+    this.accounts.delete(id);
+
+    for (const [username, alias] of this.aliases) {
+      if (alias.accountId === id) this.aliases.delete(username);
+    }
+
+    for (const [tokenId, token] of this.tokens) {
+      if (token.accountId === id) this.tokens.delete(tokenId);
+    }
+
+    for (const briefing of Array.from(this.briefings.values())) {
+      if (briefing.ownerAccountId === id) await this.deleteBriefing(briefing.id);
+    }
   }
 
   async getAccountById(id: string): Promise<AccountRecord | null> {

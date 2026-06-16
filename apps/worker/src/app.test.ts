@@ -29,6 +29,12 @@ class FakeEmail {
   }
 }
 
+class FailingEmail {
+  async send(): Promise<void> {
+    throw new Error("email service unavailable");
+  }
+}
+
 function env(email = new FakeEmail()): Env {
   return {
     ADMIN_SESSION_SECRET: "admin-secret",
@@ -118,6 +124,44 @@ describe("worker app accounts", () => {
       env(email)
     );
     expect(duplicateUsername.status).toBe(409);
+  });
+
+  it("returns JSON validation errors for invalid signup payloads", async () => {
+    const app = createApp({ repository: new InMemoryRepository() });
+
+    const response = await app.request(
+      "/api/auth/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "not-an-email", username: "Bad User", password: "short" })
+      },
+      env()
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toHaveProperty("error");
+  });
+
+  it("rolls back signup accounts when verification email sending fails", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+
+    const response = await app.request(
+      "/api/auth/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "failed@test.com", username: "Failed User", password: "password123" })
+      },
+      env(new FailingEmail() as unknown as FakeEmail)
+    );
+
+    expect(response.status).toBe(502);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({ error: "could not send verification email" });
+    expect(await repo.getAccountByEmail("failed@test.com")).toBeNull();
   });
 
   it("verifies email before login and supports password reset", async () => {

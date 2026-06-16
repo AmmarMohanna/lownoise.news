@@ -17,7 +17,7 @@ CLOUDFLARE_ACCOUNT_ID = "9cd5e9612de11953c367cbdec84ed662"
 CLOUDFLARE_AI_GATEWAY_ID = "default"
 OPENAI_MODEL = "gpt-4.1-mini"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-EMAIL_FROM = "LowNoise.news <noreply@lownoise.news>"
+EMAIL_FROM = "noreply@mail.lownoise.news"
 
 [[d1_databases]]
 binding = "DB"
