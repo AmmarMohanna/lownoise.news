@@ -1,5 +1,20 @@
 import { expect, test } from "@playwright/test";
 
+const briefing = {
+  id: "briefing_default",
+  ownerAccountId: "account_1",
+  ownerUsername: "ammar-mohanna",
+  slug: "personal",
+  title: "Personal Briefing",
+  stars: 0,
+  interestProfile: "Track Lebanese infrastructure and public safety.",
+  styleInstruction: "Use calm wording.",
+  publicFeedEnabled: true,
+  paused: false,
+  language: "en",
+  retentionDays: 15
+};
+
 const item = {
   id: "item_1",
   clusterId: "cluster_1",
@@ -23,43 +38,42 @@ const item = {
   ]
 };
 
-test("demo runs without backend API calls", async ({ page }) => {
-  let apiCalls = 0;
-  await page.route("**/api/**", async (route) => {
-    apiCalls += 1;
-    await route.abort();
+test("public signup asks for email, username, and password", async ({ page }) => {
+  await page.route("**/api/auth/session", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ authenticated: false, setupRequired: false })
+    });
+  });
+  await page.route("**/api/auth/register", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
   });
 
-  await page.goto("/demo");
-
-  await expect(page.getByRole("heading", { name: "demo" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "source posts" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "published briefing" })).toBeVisible();
-  await expect(page.getByText(/suppressed/)).toBeVisible();
-  expect(apiCalls).toBe(0);
+  await page.goto("/");
+  await page.getByRole("button", { name: "register" }).click();
+  await page.getByLabel("email").fill("ammar@example.com");
+  await page.getByLabel("username").fill("Ammar Mohanna");
+  await page.getByLabel("password").fill("password123");
+  await page.getByRole("button", { name: /^register$/ }).first().click();
+  await expect(page.getByText("check your email to verify your account")).toBeVisible();
 });
 
-test("feed stays quiet while exposing evidence, refresh, and search", async ({ page }) => {
-  await page.route("**/api/feed/personal", async (route) => {
+test("feed uses username-scoped URL while exposing evidence, refresh, and search", async ({ page }) => {
+  await page.route("**/api/feed/ammar-mohanna/personal", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        briefing: {
-          id: "briefing_default",
-          slug: "personal",
-          title: "Personal Briefing",
-          publicFeedEnabled: true,
-          retentionDays: 15
-        },
-        items: [item]
+        briefing,
+        items: [item],
+        viewerHasStarred: false
       })
     });
   });
-  await page.route("**/api/feed/personal/search?q=power%20supply", async (route) => {
+  await page.route("**/api/feed/ammar-mohanna/personal/search?q=power%20supply", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ items: [item] }) });
   });
 
-  await page.goto("/feed/personal");
+  await page.goto("/ammar-mohanna/personal/");
 
   await expect(page.getByRole("button", { name: /refresh/i })).toBeVisible();
   await expect(page.getByPlaceholder("search published briefing")).toBeVisible();
@@ -75,36 +89,34 @@ test("feed stays quiet while exposing evidence, refresh, and search", async ({ p
   await expect(page.locator(".news-item").filter({ hasText: item.summary }).first()).toBeVisible();
 });
 
-test("admin setup shows interest profile, source detection, and health", async ({ page }) => {
-  await page.route("**/api/admin/session", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ authenticated: true, setupRequired: false })
-    });
-  });
-  await page.route("**/api/admin/briefings", async (route) => {
-    if (route.request().method() === "POST") {
-      await route.fulfill({ contentType: "application/json", body: await route.request().postData()!.replace(/^/, "{\"briefing\":").concat("}") });
-      return;
-    }
+test("admin setup shows account settings, owner feed URL, sources, health, and accounts", async ({ page }) => {
+  await page.route("**/api/auth/session", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        briefings: [
-          {
-            id: "briefing_default",
-            slug: "personal",
-            title: "Personal Briefing",
-            interestProfile: "Track Lebanese infrastructure and public safety.",
-            styleInstruction: "Use calm wording.",
-            publicFeedEnabled: false,
-            retentionDays: 15
-          }
-        ]
+        authenticated: true,
+        setupRequired: false,
+        account: {
+          id: "account_1",
+          email: "ammar@example.com",
+          username: "ammar-mohanna",
+          role: "admin",
+          emailVerifiedAt: "2026-06-16T08:00:00.000Z"
+        }
       })
     });
   });
-  await page.route("**/api/admin/sources", async (route) => {
+  await page.route("**/api/me/briefings", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ briefing: JSON.parse(route.request().postData() ?? "{}") })
+      });
+      return;
+    }
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ briefings: [briefing] }) });
+  });
+  await page.route("**/api/me/sources?briefingId=briefing_default", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -121,16 +133,32 @@ test("admin setup shows interest profile, source detection, and health", async (
       })
     });
   });
-  await page.route("**/api/admin/health", async (route) => {
+  await page.route("**/api/me/health?briefingId=briefing_default", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         health: {
-          tokenConfigured: true,
-          webhookRegistered: true,
           lastTelegramEventAt: "2026-06-16T08:00:00.000Z",
+          latestPublishedAt: "2026-06-16T08:05:00.000Z",
           processing: { queued: 0, completed: 1, failed: 0 }
         }
+      })
+    });
+  });
+  await page.route("**/api/admin/accounts", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        accounts: [
+          {
+            id: "account_1",
+            email: "ammar@example.com",
+            username: "ammar-mohanna",
+            role: "admin",
+            emailVerifiedAt: "2026-06-16T08:00:00.000Z",
+            briefingCount: 1
+          }
+        ]
       })
     });
   });
@@ -139,6 +167,10 @@ test("admin setup shows interest profile, source detection, and health", async (
 
   await expect(page.getByRole("heading", { name: "admin" })).toBeVisible();
   await expect(page.getByLabel("interest profile")).toBeVisible();
+  await expect(page.getByRole("link", { name: "open", exact: true })).toHaveAttribute(
+    "href",
+    "/ammar-mohanna/personal/"
+  );
   await expect(page.getByText("Beirut Local")).toBeVisible();
-  await expect(page.getByText("registered")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "accounts" })).toBeVisible();
 });

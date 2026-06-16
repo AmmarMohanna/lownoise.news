@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
@@ -6,6 +6,7 @@ import {
   Copy,
   ExternalLink,
   Globe,
+  Github,
   Languages,
   LogIn,
   LogOut,
@@ -17,41 +18,60 @@ import {
   Save,
   Search,
   Settings,
+  Star,
   Sun,
-  Trash2
+  Trash2,
+  User
 } from "lucide-react";
 import type { BriefingConfig, BriefingItem } from "@lownoise/core";
 import { personalNewsBriefing } from "@lownoise/core";
 import {
   addPublicTelegramSource,
+  deleteBriefing,
   deleteSource,
+  forgotPassword,
   getBriefings,
   getFeed,
   getHealth,
   getSession,
   getSources,
+  listAccounts,
   login,
   logout,
   refreshPublicTelegramSources,
+  register,
+  resetPassword,
+  retryProcessing,
   saveBriefing,
   searchFeed,
-  setSourceEnabled
+  setFeedStar,
+  setSourceEnabled,
+  setupAdmin,
+  updateAccount,
+  updateAdminAccount,
+  verifyEmail,
+  type SourceIngestResult,
+  type SourceRefreshResult
 } from "./api";
-import { formatTime, publicFeedUrl, slugify, uniqueSlug } from "./helpers";
-import type { FeedPayload, HealthStatus, SessionStatus, TelegramSourceRecord } from "./types";
+import { deriveBriefingSlug, formatTime, publicFeedUrl, slugify } from "./helpers";
+import type { AccountRecord, AccountWithStats, FeedPayload, HealthStatus, SessionStatus, TelegramSourceRecord } from "./types";
 import "./styles.css";
 
 function App() {
   const path = window.location.pathname;
-  if (path.startsWith("/feed/")) return <FeedPage slug={decodeURIComponent(path.replace("/feed/", ""))} />;
+  if (path === "/verify-email") return <VerifyEmailPage token={new URLSearchParams(window.location.search).get("token") ?? ""} />;
+  if (path === "/reset-password") return <ResetPasswordPage token={new URLSearchParams(window.location.search).get("token") ?? ""} />;
+  const feedMatch = path.match(/^\/([^/.][^/]*)\/([^/]+)\/?$/);
+  if (feedMatch && !["api", "admin", "auth", "feed"].includes(feedMatch[1])) {
+    return <FeedPage username={decodeURIComponent(feedMatch[1])} slug={decodeURIComponent(feedMatch[2])} />;
+  }
   return <AdminPage />;
 }
 
-function getPageMeta(title: string): string {
-  if (title === "admin") return "Choose a feed, define what matters, and share the public line when ready.";
-  if (title === "briefing") return "A retained news line from published items only.";
-  if (title.includes("Briefing")) return "A retained news line from published items only.";
-  return "Self-hosted filtering for calmer news intake.";
+function languageLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "arabic";
+  if (language === "fr") return "french";
+  return "english";
 }
 
 function AdminPage() {
@@ -60,11 +80,47 @@ function AdminPage() {
   const [selectedBriefingId, setSelectedBriefingId] = useState<string | null>(null);
   const [sources, setSources] = useState<TelegramSourceRecord[]>([]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [accounts, setAccounts] = useState<AccountWithStats[]>([]);
   const [status, setStatus] = useState("");
+  const [sourceStatus, setSourceStatus] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [error, setError] = useState("");
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const selectedBriefingIdRef = useRef<string | null>(null);
 
+  const account = session?.account ?? null;
   const briefing = briefings.find((item) => item.id === selectedBriefingId) ?? null;
+  const orderedBriefings = sortBriefings(briefings);
+  const previewSlug = briefing ? deriveBriefingSlug(briefings, briefing.title, briefing.id) : "";
+
+  useEffect(() => {
+    selectedBriefingIdRef.current = selectedBriefingId;
+  }, [selectedBriefingId]);
+
+  useEffect(() => {
+    getSession()
+      .then(async (nextSession) => {
+        setSession(nextSession);
+        if (nextSession.authenticated) {
+          await loadBriefings();
+          if (nextSession.account?.role === "admin") setAccounts(await listAccounts());
+        }
+      })
+      .catch((cause) => setError(String(cause)));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedBriefingId || !session?.authenticated) return;
+    loadScopedData(selectedBriefingId).catch((cause) =>
+      setError(cause instanceof Error ? cause.message : String(cause))
+    );
+  }, [selectedBriefingId, session?.authenticated]);
+
+  async function refreshSession() {
+    const next = await getSession();
+    setSession(next);
+    return next;
+  }
 
   async function loadBriefings(preferredId?: string) {
     const nextBriefings = await getBriefings();
@@ -82,36 +138,32 @@ function AdminPage() {
     setHealth(nextHealth);
   }
 
-  useEffect(() => {
-    getSession()
-      .then(async (nextSession) => {
-        setSession(nextSession);
-        if (nextSession.authenticated) await loadBriefings();
-      })
-      .catch((cause) => setError(String(cause)));
-  }, []);
-
-  useEffect(() => {
-    if (!selectedBriefingId || !session?.authenticated) return;
-    loadScopedData(selectedBriefingId).catch((cause) =>
-      setError(cause instanceof Error ? cause.message : String(cause))
-    );
-  }, [selectedBriefingId, session?.authenticated]);
-
   async function persistBriefing(nextBriefing: BriefingConfig, nextStatus = "saved"): Promise<BriefingConfig> {
     setError("");
     setStatus("saving");
-    const saved = await saveBriefing({ ...nextBriefing, slug: slugify(nextBriefing.slug) });
-    setBriefings((current) => updateBriefingList(current, saved));
-    setSelectedBriefingId(saved.id);
-    setStatus(nextStatus);
-    return saved;
+    setBusyAction("save-feed");
+    try {
+      const saved = await saveBriefing(prepareBriefingForSave(nextBriefing, briefings));
+      setBriefings((current) => updateBriefingList(current, saved));
+      setSelectedBriefingId(saved.id);
+      setStatus(nextStatus);
+      return saved;
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function createBriefing() {
-    const draft = createBriefingDraft(briefings);
-    const created = await persistBriefing(draft, "feed created");
-    await loadBriefings(created.id);
+    if (!account) return;
+    setError("");
+    setBusyAction("create-feed");
+    try {
+      const draft = createBriefingDraft(briefings, account);
+      const created = await persistBriefing(draft, "feed created");
+      await loadBriefings(created.id);
+    } finally {
+      setBusyAction(null);
+    }
   }
 
   async function copyPublicFeedUrl(nextBriefing: BriefingConfig) {
@@ -119,11 +171,7 @@ function AdminPage() {
       setStatus("enable public feed first");
       return;
     }
-    if (!navigator.clipboard?.writeText) {
-      setError("Clipboard access is not available in this browser.");
-      return;
-    }
-    await navigator.clipboard.writeText(publicFeedUrl(nextBriefing.slug));
+    await navigator.clipboard.writeText(publicFeedUrl(nextBriefing.ownerUsername, nextBriefing.slug));
     setStatus("public feed url copied");
   }
 
@@ -134,8 +182,7 @@ function AdminPage() {
     setSelectedBriefingId(null);
     setSources([]);
     setHealth(null);
-    setStatus("");
-    setSourceUrl("");
+    setAccounts([]);
   }
 
   function patchSelectedBriefing(patch: Partial<BriefingConfig>) {
@@ -156,15 +203,25 @@ function AdminPage() {
   if (!session.authenticated) {
     return (
       <Shell title="LowNoise.news">
-        <LoginForm
+        <AuthPanel
           setupRequired={session.setupRequired}
-          onLogin={async () => {
-            const nextSession = await getSession();
-            setSession(nextSession);
-            await loadBriefings();
+          onAuthenticated={async () => {
+            const next = await refreshSession();
+            if (next.authenticated) {
+              await loadBriefings();
+              if (next.account?.role === "admin") setAccounts(await listAccounts());
+            }
           }}
         />
         {error ? <p className="error">{error}</p> : null}
+      </Shell>
+    );
+  }
+
+  if (!account) {
+    return (
+      <Shell title="admin" onLogout={handleLogout}>
+        <p className="error">session account unavailable</p>
       </Shell>
     );
   }
@@ -186,44 +243,49 @@ function AdminPage() {
   }
 
   return (
-    <Shell title="admin" onLogout={handleLogout} feedSlug={briefing.slug}>
+    <Shell title="admin" onLogout={handleLogout} feed={briefing}>
       <div className="admin-stack">
+        <section className="section">
+          <div className="section-title">
+            <User size={16} aria-hidden />
+            <h2>account</h2>
+          </div>
+          <AccountSettings
+            account={account}
+            onSaved={async (nextAccount, nextBriefings) => {
+              setSession({ ...session, account: nextAccount });
+              setBriefings(nextBriefings);
+              setStatus("username saved");
+              if (selectedBriefingId) await loadScopedData(selectedBriefingId);
+            }}
+          />
+        </section>
+
         <section className="section">
           <div className="section-title">
             <Globe size={16} aria-hidden />
             <h2>feeds</h2>
           </div>
           <div className="actions">
-            <button type="button" onClick={() => createBriefing()}>
+            <button type="button" disabled={busyAction === "create-feed"} onClick={() => createBriefing()}>
               <Plus size={15} aria-hidden /> new feed
             </button>
             {status ? <span className="muted">{status}</span> : null}
           </div>
           <div className="feed-list">
-            {briefings.map((item) => (
-              <div
-                key={item.id}
-                className={`feed-row${item.id === briefing.id ? " active" : ""}`}
-              >
-                <button
-                  type="button"
-                  className="feed-select"
-                  onClick={() => setSelectedBriefingId(item.id)}
-                >
+            {orderedBriefings.map((item) => (
+              <div key={item.id} className={`feed-row${item.id === briefing.id ? " active" : ""}`}>
+                <button type="button" className="feed-select" onClick={() => setSelectedBriefingId(item.id)}>
                   <span className="feed-title">{item.title}</span>
-                  <span className="muted">/{item.slug}</span>
                 </button>
                 <div className="feed-flags">
-                  <span className="pill">{item.language === "ar" ? "arabic" : "english"}</span>
+                  <span className="star-count"><Star size={13} aria-hidden /> {item.stars}</span>
+                  <span className="pill">{languageLabel(item.language)}</span>
                   <span className="pill">{item.publicFeedEnabled ? "public" : "private"}</span>
                   {item.paused ? <span className="pill">paused</span> : null}
                 </div>
-                <a className="button-link" href={`/feed/${item.slug}`}>open</a>
-                <button
-                  type="button"
-                  disabled={!item.publicFeedEnabled}
-                  onClick={() => copyPublicFeedUrl(item)}
-                >
+                <a className="button-link" href={`/${item.ownerUsername}/${item.slug}/`}>open</a>
+                <button type="button" disabled={!item.publicFeedEnabled} onClick={() => copyPublicFeedUrl(item)}>
                   <Copy size={15} aria-hidden /> copy url
                 </button>
               </div>
@@ -250,43 +312,31 @@ function AdminPage() {
             </div>
             <label>
               title
-              <input
-                dir={briefing.language === "ar" ? "rtl" : "ltr"}
-                value={briefing.title}
-                onChange={(event) => patchSelectedBriefing({ title: event.target.value })}
-              />
+              <input dir="ltr" value={briefing.title} onChange={(event) => patchSelectedBriefing({ title: event.target.value })} />
             </label>
-            <label>
-              slug
-              <input
-                dir="ltr"
-                value={briefing.slug}
-                onChange={(event) => patchSelectedBriefing({ slug: event.target.value })}
-              />
-            </label>
+            <div className="field-group">
+              <span>slug</span>
+              <code className="generated-slug">/{briefing.ownerUsername}/{previewSlug}/</code>
+            </div>
             <div className="field-group">
               <span>language</span>
               <div className="segmented" role="group" aria-label="feed language">
-                <button
-                  type="button"
-                  className={briefing.language === "en" ? "active" : ""}
-                  onClick={() => patchSelectedBriefing({ language: "en" })}
-                >
-                  <Languages size={15} aria-hidden /> english
-                </button>
-                <button
-                  type="button"
-                  className={briefing.language === "ar" ? "active" : ""}
-                  onClick={() => patchSelectedBriefing({ language: "ar" })}
-                >
-                  <Languages size={15} aria-hidden /> arabic
-                </button>
+                {(["en", "fr", "ar"] as const).map((language) => (
+                  <button
+                    key={language}
+                    type="button"
+                    className={briefing.language === language ? "active" : ""}
+                    onClick={() => patchSelectedBriefing({ language })}
+                  >
+                    <Languages size={15} aria-hidden /> {languageLabel(language)}
+                  </button>
+                ))}
               </div>
             </div>
             <label>
               interest profile
               <textarea
-                dir={briefing.language === "ar" ? "rtl" : "ltr"}
+                dir="ltr"
                 required
                 rows={6}
                 value={briefing.interestProfile}
@@ -296,7 +346,7 @@ function AdminPage() {
             <label>
               style instruction
               <textarea
-                dir={briefing.language === "ar" ? "rtl" : "ltr"}
+                dir="ltr"
                 rows={3}
                 value={briefing.styleInstruction ?? ""}
                 onChange={(event) => patchSelectedBriefing({ styleInstruction: event.target.value })}
@@ -327,6 +377,7 @@ function AdminPage() {
               <button type="submit"><Save size={15} aria-hidden /> save</button>
               <button
                 type="button"
+                disabled={busyAction === "pause-feed"}
                 onClick={async () => {
                   try {
                     await persistBriefing({ ...briefing, paused: !briefing.paused }, briefing.paused ? "feed resumed" : "feed paused");
@@ -339,13 +390,24 @@ function AdminPage() {
                 {briefing.paused ? <Play size={15} aria-hidden /> : <Pause size={15} aria-hidden />}
                 {briefing.paused ? "resume feed" : "pause feed"}
               </button>
-              <a className="button-link" href={`/feed/${briefing.slug}`}>open feed</a>
+              <a className="button-link" href={`/${briefing.ownerUsername}/${briefing.slug}/`}>open feed</a>
+              <button type="button" disabled={!briefing.publicFeedEnabled} onClick={() => copyPublicFeedUrl(briefing)}>
+                <Copy size={15} aria-hidden /> copy public url
+              </button>
               <button
                 type="button"
-                disabled={!briefing.publicFeedEnabled}
-                onClick={() => copyPublicFeedUrl(briefing)}
+                className="danger-button"
+                disabled={briefings.length <= 1 || busyAction === "delete-feed"}
+                onClick={async () => {
+                  if (briefings.length <= 1) return;
+                  if (!window.confirm(`Delete "${briefing.title}" and all of its sources and published items?`)) return;
+                  const remaining = await deleteBriefing(briefing.id);
+                  setBriefings(remaining);
+                  setSelectedBriefingId(remaining[0]?.id ?? null);
+                  setStatus("feed deleted");
+                }}
               >
-                <Copy size={15} aria-hidden /> copy public url
+                <Trash2 size={15} aria-hidden /> delete feed
               </button>
             </div>
             {error ? <p className="error">{error}</p> : null}
@@ -359,27 +421,27 @@ function AdminPage() {
             <div className="source-add">
               <label>
                 telegram channel url
-                <input
-                  dir="ltr"
-                  value={sourceUrl}
-                  onChange={(event) => setSourceUrl(event.target.value)}
-                  placeholder="https://t.me/LebUpdate"
-                />
+                <input dir="ltr" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://t.me/LebUpdate" />
               </label>
               <button
                 type="button"
-                disabled={!sourceUrl.trim() || briefing.paused}
+                disabled={!sourceUrl.trim() || briefing.paused || busyAction === "add-source"}
                 onClick={async () => {
                   setError("");
                   try {
-                    setStatus("adding source");
-                    setSources(await addPublicTelegramSource(briefing.id, sourceUrl));
+                    setBusyAction("add-source");
+                    setSourceStatus("fetching the public Telegram page and queuing matching posts");
+                    const response = await addPublicTelegramSource(briefing.id, sourceUrl);
+                    applySourceResponse(response);
                     setSourceUrl("");
-                    setHealth(await getHealth(briefing.id));
                     setStatus("source added");
+                    void pollHealthUntilSettled(briefing.id, response.health);
                   } catch (cause) {
                     setStatus("");
                     setError(cause instanceof Error ? cause.message : String(cause));
+                    setSourceStatus("");
+                  } finally {
+                    setBusyAction(null);
                   }
                 }}
               >
@@ -389,60 +451,75 @@ function AdminPage() {
             <div className="actions">
               <button
                 type="button"
-                disabled={briefing.paused}
+                disabled={briefing.paused || busyAction === "refresh-source"}
                 onClick={async () => {
                   setError("");
                   try {
-                    setStatus("fetching latest");
-                    setSources(await refreshPublicTelegramSources(briefing.id));
-                    setHealth(await getHealth(briefing.id));
+                    setBusyAction("refresh-source");
+                    setSourceStatus("fetching enabled channels");
+                    const response = await refreshPublicTelegramSources(briefing.id);
+                    applySourceResponse(response);
                     setStatus("latest fetched");
+                    void pollHealthUntilSettled(briefing.id, response.health);
                   } catch (cause) {
                     setStatus("");
                     setError(cause instanceof Error ? cause.message : String(cause));
+                    setSourceStatus("");
+                  } finally {
+                    setBusyAction(null);
                   }
                 }}
               >
                 <RefreshCw size={15} aria-hidden /> fetch latest
               </button>
+              <button
+                type="button"
+                disabled={busyAction === "retry-processing"}
+                onClick={async () => {
+                  setBusyAction("retry-processing");
+                  const response = await retryProcessing(briefing.id);
+                  setHealth(response.health);
+                  setStatus(response.retried > 0 ? `retried ${response.retried} job(s)` : "no stale jobs to retry");
+                  setBusyAction(null);
+                }}
+              >
+                <RefreshCw size={15} aria-hidden /> retry processing
+              </button>
             </div>
+            {sourceStatus ? <p className="muted section-note">{sourceStatus}</p> : null}
             <div className="health">
               <StatusLine label="processing" value={`queued ${health?.processing.queued ?? 0} / failed ${health?.processing.failed ?? 0}`} />
               <StatusLine label="last source event" value={health?.lastTelegramEventAt ?? "none"} />
+              <StatusLine label="latest published" value={health?.latestPublishedAt ? formatTime(health.latestPublishedAt, briefing.language) : "none"} />
               <StatusLine label="status" value={briefing.paused ? "paused" : "live"} />
             </div>
             <div className="source-list">
-              {sources.length === 0 ? <p className="muted">add public Telegram channel URLs to feed this briefing</p> : null}
+              {sources.length === 0 ? <p className="muted">add Telegram channel URLs</p> : null}
               {sources.map((source) => (
                 <div key={source.id} className="source-row">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={source.enabled}
-                      onChange={async (event) => {
-                        setSources(await setSourceEnabled(briefing.id, source.id, event.target.checked));
-                      }}
-                    />
-                    <span dir="auto">{source.title}</span>
-                  </label>
-                  {source.url ? (
-                    <a href={source.url} target="_blank" rel="noreferrer">
-                      {source.username ?? "open"}
-                    </a>
-                  ) : null}
+                  <div className="source-copy">
+                    <label className="source-toggle">
+                      <input
+                        type="checkbox"
+                        checked={source.enabled}
+                        onChange={async (event) => {
+                          setSources(await setSourceEnabled(briefing.id, source.id, event.target.checked));
+                          setSourceStatus(event.target.checked ? "source enabled" : "source paused");
+                        }}
+                      />
+                      <span className="source-title" title={source.title}><bdi>{source.title}</bdi></span>
+                    </label>
+                    {source.url ? <a className="source-link" href={source.url} target="_blank" rel="noreferrer" dir="ltr">{source.username ?? "open"}</a> : null}
+                  </div>
                   <button
                     type="button"
                     className="icon-button"
                     aria-label={`remove ${source.title}`}
                     onClick={async () => {
-                      setError("");
-                      try {
-                        setSources(await deleteSource(briefing.id, source.id));
-                        setStatus("source removed");
-                      } catch (cause) {
-                        setStatus("");
-                        setError(cause instanceof Error ? cause.message : String(cause));
-                      }
+                      const response = await deleteSource(briefing.id, source.id);
+                      setSources(response.sources);
+                      setHealth(response.health);
+                      setSourceStatus("source removed");
                     }}
                   >
                     <Trash2 size={15} aria-hidden />
@@ -452,15 +529,48 @@ function AdminPage() {
             </div>
           </section>
         </div>
+
+        {account.role === "admin" ? (
+          <AdminAccountsSection
+            accounts={accounts}
+            onReload={async () => setAccounts(await listAccounts())}
+          />
+        ) : null}
       </div>
     </Shell>
   );
+
+  function applySourceResponse(response: SourceRefreshResult) {
+    setSources(response.sources);
+    setHealth(response.health);
+    if (response.result) setSourceStatus(formatSourceIngestResult(response.result));
+    else if (response.results) setSourceStatus(formatSourceRefreshResults(response.results));
+  }
+
+  async function pollHealthUntilSettled(briefingId: string, initialHealth: HealthStatus) {
+    let nextHealth = initialHealth;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (selectedBriefingIdRef.current !== briefingId) return;
+      if (nextHealth.processing.queued <= 0) {
+        setSourceStatus("queue clear");
+        return;
+      }
+      setSourceStatus(`processing ${nextHealth.processing.queued} queued post(s)`);
+      await wait(1200);
+      nextHealth = await getHealth(briefingId);
+      if (selectedBriefingIdRef.current !== briefingId) return;
+      setHealth(nextHealth);
+    }
+  }
 }
 
-function LoginForm(props: { setupRequired: boolean; onLogin: () => Promise<void> }) {
-  const [username, setUsername] = useState("admin");
+function AuthPanel(props: { setupRequired: boolean; onAuthenticated: () => Promise<void> }) {
+  const [mode, setMode] = useState<"login" | "register" | "forgot">(props.setupRequired ? "register" : "login");
+  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [setupToken, setSetupToken] = useState("");
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   return (
@@ -469,9 +579,25 @@ function LoginForm(props: { setupRequired: boolean; onLogin: () => Promise<void>
       onSubmit={async (event) => {
         event.preventDefault();
         setError("");
+        setMessage("");
         try {
-          await login(username, password, props.setupRequired ? setupToken : undefined);
-          await props.onLogin();
+          if (props.setupRequired) {
+            await setupAdmin({ email, username, password, setupToken });
+            await props.onAuthenticated();
+            return;
+          }
+          if (mode === "register") {
+            await register({ email, username, password });
+            setMessage("check your email to verify your account");
+            return;
+          }
+          if (mode === "forgot") {
+            await forgotPassword(email);
+            setMessage("if the account exists, a reset email was sent");
+            return;
+          }
+          await login(email, password);
+          await props.onAuthenticated();
         } catch (cause) {
           setError(cause instanceof Error ? cause.message : String(cause));
         }
@@ -484,89 +610,233 @@ function LoginForm(props: { setupRequired: boolean; onLogin: () => Promise<void>
         </label>
       ) : null}
       <label>
-        admin username
-        <input value={username} onChange={(event) => setUsername(event.target.value)} />
+        email
+        <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
       </label>
-      <label>
-        admin password
-        <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-      </label>
-      <button type="submit"><LogIn size={15} aria-hidden /> enter</button>
+      {(mode === "register" || props.setupRequired) ? (
+        <label>
+          username
+          <input value={username} onChange={(event) => setUsername(event.target.value)} />
+        </label>
+      ) : null}
+      {mode !== "forgot" ? (
+        <label>
+          password
+          <input type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} />
+        </label>
+      ) : null}
+      <button type="submit"><LogIn size={15} aria-hidden /> {props.setupRequired ? "create admin" : mode}</button>
+      {!props.setupRequired ? (
+        <div className="actions">
+          <button type="button" onClick={() => setMode("login")}>login</button>
+          <button type="button" onClick={() => setMode("register")}>register</button>
+          <button type="button" onClick={() => setMode("forgot")}>forgot password</button>
+        </div>
+      ) : null}
+      {message ? <p className="muted">{message}</p> : null}
       {error ? <p className="error">{error}</p> : null}
     </form>
   );
 }
 
-function FeedPage(props: { slug: string }) {
+function VerifyEmailPage(props: { token: string }) {
+  const [message, setMessage] = useState("verifying");
+  useEffect(() => {
+    verifyEmail(props.token)
+      .then(() => setMessage("email verified"))
+      .catch((cause) => setMessage(cause instanceof Error ? cause.message : String(cause)));
+  }, [props.token]);
+  return (
+    <Shell title="verify email">
+      <section className="section notice"><p>{message}</p><a className="button-link" href="/">admin</a></section>
+    </Shell>
+  );
+}
+
+function ResetPasswordPage(props: { token: string }) {
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  return (
+    <Shell title="reset password">
+      <form className="login" onSubmit={async (event) => {
+        event.preventDefault();
+        try {
+          await resetPassword(props.token, password);
+          setMessage("password reset");
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      }}>
+        <label>
+          new password
+          <input type="password" minLength={8} value={password} onChange={(event) => setPassword(event.target.value)} />
+        </label>
+        <button type="submit"><Save size={15} aria-hidden /> save password</button>
+        {message ? <p className="muted">{message}</p> : null}
+        {error ? <p className="error">{error}</p> : null}
+      </form>
+    </Shell>
+  );
+}
+
+function AccountSettings(props: {
+  account: AccountRecord;
+  onSaved: (account: AccountRecord, briefings: BriefingConfig[]) => Promise<void>;
+}) {
+  const [username, setUsername] = useState(props.account.username);
+  const [error, setError] = useState("");
+  return (
+    <form
+      className="source-add"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setError("");
+        try {
+          const result = await updateAccount({ username });
+          await props.onSaved(result.account, result.briefings);
+        } catch (cause) {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        }
+      }}
+    >
+      <label>
+        username
+        <input value={username} onChange={(event) => setUsername(event.target.value)} />
+      </label>
+      <button type="submit"><Save size={15} aria-hidden /> save</button>
+      <p className="muted">{props.account.email} / {props.account.role}</p>
+      {error ? <p className="error">{error}</p> : null}
+    </form>
+  );
+}
+
+function AdminAccountsSection(props: { accounts: AccountWithStats[]; onReload: () => Promise<void> }) {
+  return (
+    <section className="section">
+      <div className="section-title">
+        <User size={16} aria-hidden />
+        <h2>accounts</h2>
+      </div>
+      <div className="source-list">
+        {props.accounts.map((account) => (
+          <div key={account.id} className="source-row">
+            <div className="source-copy">
+              <strong>{account.username}</strong>
+              <span className="muted">{account.email} / {account.role} / feeds {account.briefingCount}</span>
+              <span className="muted">{account.disabledAt ? "disabled" : account.emailVerifiedAt ? "verified" : "unverified"}</span>
+            </div>
+            <div className="actions">
+              <button type="button" onClick={async () => {
+                await updateAdminAccount(account.id, { disabled: !account.disabledAt });
+                await props.onReload();
+              }}>
+                {account.disabledAt ? "enable" : "disable"}
+              </button>
+              <button type="button" onClick={async () => {
+                await updateAdminAccount(account.id, { role: account.role === "admin" ? "user" : "admin" });
+                await props.onReload();
+              }}>
+                {account.role === "admin" ? "make user" : "make admin"}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FeedPage(props: { username: string; slug: string }) {
   const [payload, setPayload] = useState<FeedPayload | null>(null);
   const [items, setItems] = useState<BriefingItem[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
+  const [starBusy, setStarBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
 
   async function refresh() {
     setError("");
-    const next = await getFeed(props.slug);
+    const next = await getFeed(props.username, props.slug);
     setPayload(next);
     setItems(next.items);
   }
 
   useEffect(() => {
     refresh().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-  }, [props.slug]);
+  }, [props.username, props.slug]);
 
   useEffect(() => {
-    const raw = localStorage.getItem(`ln_read:${props.slug}`);
+    const raw = localStorage.getItem(`ln_read:${props.username}:${props.slug}`);
     setReadIds(new Set(raw ? (JSON.parse(raw) as string[]) : []));
-  }, [props.slug]);
+  }, [props.username, props.slug]);
 
   useEffect(() => {
-    localStorage.setItem(`ln_read:${props.slug}`, JSON.stringify(Array.from(readIds)));
-  }, [props.slug, readIds]);
+    localStorage.setItem(`ln_read:${props.username}:${props.slug}`, JSON.stringify(Array.from(readIds)));
+  }, [props.username, props.slug, readIds]);
 
   useEffect(() => {
     if (!payload) return;
-
     let active = true;
     const timeout = window.setTimeout(async () => {
       try {
         setError("");
-        const nextItems = query.trim() ? await searchFeed(props.slug, query) : payload.items;
+        const nextItems = query.trim() ? await searchFeed(props.username, props.slug, query) : payload.items;
         if (active) setItems(nextItems);
       } catch (cause) {
         if (active) setError(cause instanceof Error ? cause.message : String(cause));
       }
     }, 250);
-
     return () => {
       active = false;
       window.clearTimeout(timeout);
     };
-  }, [payload, props.slug, query]);
+  }, [payload, props.username, props.slug, query]);
 
   const unreadItems = items.filter((item) => !readIds.has(item.id));
   const archivedReadItems = items.filter((item) => readIds.has(item.id));
   const language = payload?.briefing.language ?? "en";
+  const canStar = Boolean(payload?.briefing.publicFeedEnabled);
 
   return (
-    <Shell title={payload?.briefing.title ?? "briefing"} feedSlug={props.slug}>
+    <Shell title={payload?.briefing.title ?? "briefing"} feed={payload?.briefing} pageLanguage={language}>
       <div className="feed-tools">
-        <button onClick={() => refresh()}><RefreshCw size={15} aria-hidden /> refresh</button>
+        <div className="feed-actions">
+          <button onClick={() => refresh()}><RefreshCw size={15} aria-hidden /> refresh</button>
+          <button
+            type="button"
+            className={`star-vote${payload?.viewerHasStarred ? " is-starred" : ""}`}
+            disabled={!canStar || starBusy || !payload}
+            aria-pressed={payload?.viewerHasStarred ?? false}
+            onClick={async () => {
+              if (!payload) return;
+              setStarBusy(true);
+              try {
+                const result = await setFeedStar(props.username, props.slug, !payload.viewerHasStarred);
+                setPayload({
+                  ...payload,
+                  briefing: { ...payload.briefing, stars: result.stars },
+                  viewerHasStarred: result.viewerHasStarred
+                });
+              } finally {
+                setStarBusy(false);
+              }
+            }}
+          >
+            <Star size={15} aria-hidden />
+            {payload?.viewerHasStarred ? "starred" : "star"} {payload?.briefing.stars ?? 0}
+          </button>
+        </div>
         <form
           className="search"
           onSubmit={async (event) => {
             event.preventDefault();
-            setItems(query.trim() ? await searchFeed(props.slug, query) : payload?.items ?? []);
+            setItems(query.trim() ? await searchFeed(props.username, props.slug, query) : payload?.items ?? []);
           }}
         >
           <Search size={15} aria-hidden />
-          <input
-            aria-label="search published briefing"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="search published briefing"
-          />
+          <input aria-label="search published briefing" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="search published briefing" />
         </form>
       </div>
       {error ? <FeedNotice message={error} /> : null}
@@ -586,9 +856,7 @@ function FeedPage(props: { slug: string }) {
           <div className="empty-state">
             <strong>{archivedReadItems.length > 0 ? "all visible items are read" : "no published items"}</strong>
             <p className="muted">
-              {archivedReadItems.length > 0
-                ? "Open the read section below to revisit archived lines."
-                : "The briefing line fills after enabled Telegram sources publish matching items."}
+              {archivedReadItems.length > 0 ? "Open the read section below to revisit archived lines." : "The briefing line fills after enabled Telegram sources publish matching items."}
             </p>
           </div>
         ) : null}
@@ -617,7 +885,7 @@ function FeedPage(props: { slug: string }) {
 
 function FeedItemRow(props: {
   item: BriefingItem;
-  language: "en" | "ar";
+  language: "en" | "ar" | "fr";
   isExpanded: boolean;
   isRead: boolean;
   onToggleExpanded: () => void;
@@ -625,58 +893,37 @@ function FeedItemRow(props: {
 }) {
   return (
     <article className="news-item">
-      <button
-        type="button"
-        className="read-button"
-        aria-label={props.isRead ? `mark ${props.item.summary} unread` : `mark ${props.item.summary} read`}
-        onClick={props.onToggleRead}
-      >
+      <button type="button" className="read-button" aria-label={props.isRead ? `mark ${props.item.summary} unread` : `mark ${props.item.summary} read`} onClick={props.onToggleRead}>
         {props.isRead ? "unread" : "read"}
       </button>
-      <button
-        type="button"
-        className="expand"
-        aria-expanded={props.isExpanded}
-        aria-label={`show evidence for ${props.item.summary}`}
-        onClick={props.onToggleExpanded}
-      >
+      <button type="button" className="expand" aria-expanded={props.isExpanded} aria-label={`show evidence for ${props.item.summary}`} onClick={props.onToggleExpanded}>
         {props.isExpanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />}
       </button>
-      <div className="news-copy" dir={props.language === "ar" ? "rtl" : "ltr"} lang={props.language}>
+      <div className="news-copy" lang={props.language}>
         <div className="news-meta">
           <time dateTime={props.item.itemAt} dir="ltr">{formatTime(props.item.itemAt, props.language)}</time>
-          {props.item.mergedUpdateCount > 0 ? (
-            <span className="muted">updates {props.item.mergedUpdateCount + 1}</span>
-          ) : null}
+          {props.item.mergedUpdateCount > 0 ? <span className="muted">updates {props.item.mergedUpdateCount + 1}</span> : null}
         </div>
-        <p className="news-summary">{props.item.summary}</p>
+        <p className="news-summary"><bdi>{props.item.summary}</bdi></p>
         {props.isExpanded ? <EvidenceList item={props.item} language={props.language} /> : null}
       </div>
     </article>
   );
 }
 
-function EvidenceList(props: { item: BriefingItem; language: "en" | "ar" }) {
+function EvidenceList(props: { item: BriefingItem; language: "en" | "ar" | "fr" }) {
   return (
     <div className="evidence">
       {props.item.evidence.map((entry) => (
         <div key={entry.messageId} className="evidence-row">
           <div className="evidence-head">
-            <strong dir="auto">{entry.sourceTitle}</strong>
+            <strong className="evidence-title"><bdi>{entry.sourceTitle}</bdi></strong>
             <time dateTime={entry.postedAt} dir="ltr">{formatTime(entry.postedAt, props.language)}</time>
           </div>
-          <p dir="auto">{entry.text}</p>
+          <p className="evidence-text"><bdi>{entry.text}</bdi></p>
           <div className="evidence-links">
-            {entry.sourceUrl ? (
-              <a href={entry.sourceUrl} target="_blank" rel="noreferrer">
-                <ExternalLink size={14} aria-hidden /> original
-              </a>
-            ) : null}
-            {entry.links.map((link) => (
-              <a key={link} href={link} target="_blank" rel="noreferrer">
-                <ExternalLink size={14} aria-hidden /> link
-              </a>
-            ))}
+            {entry.sourceUrl ? <a href={entry.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> original</a> : null}
+            {entry.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> link</a>)}
             {entry.media.map((media, index) =>
               media.url ? (
                 <a key={`${media.url}-${index}`} href={media.url} target="_blank" rel="noreferrer">
@@ -714,40 +961,49 @@ function FeedNotice(props: { message: string }) {
 function Shell(props: {
   title: string;
   children: React.ReactNode;
-  feedSlug?: string;
+  feed?: Pick<BriefingConfig, "ownerUsername" | "slug" | "title">;
   onLogout?: () => Promise<void>;
+  pageLanguage?: "en" | "ar" | "fr";
 }) {
   const [theme, setTheme] = useState(() => localStorage.getItem("ln_theme") ?? "dark");
-
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("ln_theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    document.documentElement.lang = props.pageLanguage ?? "en";
+    document.title = props.title === "LowNoise.news" ? "LowNoise.news" : `${props.title} · LowNoise.news`;
+    const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    if (manifest) {
+      manifest.href = props.feed
+        ? `/manifest.webmanifest?user=${encodeURIComponent(props.feed.ownerUsername)}&feed=${encodeURIComponent(props.feed.slug)}`
+        : "/manifest.webmanifest";
+    }
+  }, [props.feed, props.pageLanguage, props.title]);
+
   return (
     <main className="shell">
       <header>
         <div className="header-primary">
-          {props.onLogout ? (
-            <button type="button" onClick={() => void props.onLogout?.()}>
-              <LogOut size={15} aria-hidden /> logout
-            </button>
-          ) : null}
-          <a href="/" className="brand">LowNoise.news</a>
+          <div className="brand-lockup">
+            <a href="/" className="brand">LowNoise.news</a>
+            <a href="https://github.com/AmmarMohanna/lownoise.news" target="_blank" rel="noreferrer" className="brand-icon" aria-label="Open GitHub repository">
+              <Github size={16} aria-hidden />
+            </a>
+          </div>
         </div>
         <div className="header-actions">
           <nav>
             <a href="/">admin</a>
-            {props.feedSlug ? <a href={`/feed/${props.feedSlug}`}>feed</a> : null}
+            {props.feed ? <a href={`/${props.feed.ownerUsername}/${props.feed.slug}/`}>feed</a> : null}
           </nav>
-          <button
-            type="button"
-            className="icon-button"
-            aria-label={`switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
-          >
-            {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
-          </button>
+          <div className="header-controls">
+            <button type="button" className="icon-button" aria-label={`switch to ${theme === "dark" ? "light" : "dark"} mode`} onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}>
+              {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
+            </button>
+            {props.onLogout ? <button type="button" onClick={() => void props.onLogout?.()}><LogOut size={15} aria-hidden /> logout</button> : null}
+          </div>
         </div>
       </header>
       <div className="page-heading">
@@ -759,23 +1015,35 @@ function Shell(props: {
   );
 }
 
+function getPageMeta(title: string): string {
+  if (title === "admin") return "Define the feed and review sources.";
+  if (title === "briefing") return "Published briefing items only.";
+  if (title.includes("Briefing")) return "Published briefing items only.";
+  if (title === "verify email") return "Account verification.";
+  if (title === "reset password") return "Account recovery.";
+  return "Self-hosted news filtering.";
+}
+
 function updateBriefingList(current: BriefingConfig[], next: BriefingConfig): BriefingConfig[] {
   const exists = current.some((item) => item.id === next.id);
   if (!exists) return [...current, next];
   return current.map((item) => (item.id === next.id ? next : item));
 }
 
-function createBriefingDraft(existing: BriefingConfig[]): BriefingConfig {
+function createBriefingDraft(existing: BriefingConfig[], account: AccountRecord): BriefingConfig {
   const nextIndex = existing.length + 1;
-  const slugBase = nextIndex === 1 ? "personal" : `feed-${nextIndex}`;
+  const title = nextIndex === 1 ? "Personal Briefing" : `Briefing ${nextIndex}`;
   return {
     ...personalNewsBriefing,
     id: `briefing_${crypto.randomUUID()}`,
-    slug: uniqueSlug(existing, slugBase),
-    title: nextIndex === 1 ? "Personal Briefing" : `Briefing ${nextIndex}`,
+    ownerAccountId: account.id,
+    ownerUsername: account.username,
+    title,
+    slug: deriveBriefingSlug(existing, title),
     publicFeedEnabled: false,
     paused: false,
-    language: "en"
+    language: "en",
+    stars: 0
   };
 }
 
@@ -800,6 +1068,42 @@ function toggleRead(
   if (read) next.add(id);
   else next.delete(id);
   setValue(next);
+}
+
+function formatSourceIngestResult(result: SourceIngestResult): string {
+  if (result.imported === 0 && result.skipped > 0) return `checked ${result.fetched}, no new posts`;
+  return `fetched ${result.fetched}, queued ${result.queued}`;
+}
+
+function formatSourceRefreshResults(results: SourceIngestResult[]): string {
+  const totals = results.reduce(
+    (sum, result) => ({
+      fetched: sum.fetched + result.fetched,
+      imported: sum.imported + result.imported,
+      queued: sum.queued + result.queued,
+      skipped: sum.skipped + result.skipped
+    }),
+    { fetched: 0, imported: 0, queued: 0, skipped: 0 }
+  );
+  if (totals.fetched === 0) return "no enabled channel URLs to refresh";
+  if (totals.imported === 0 && totals.skipped > 0) return `checked ${totals.fetched}, no new posts`;
+  return `fetched ${totals.fetched}, queued ${totals.queued}`;
+}
+
+async function wait(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function prepareBriefingForSave(briefing: BriefingConfig, existing: BriefingConfig[]): BriefingConfig {
+  const nextSlug = deriveBriefingSlug(existing, briefing.title, briefing.id);
+  return { ...briefing, slug: slugify(nextSlug) };
+}
+
+function sortBriefings(briefings: BriefingConfig[]): BriefingConfig[] {
+  return [...briefings].sort((left, right) => {
+    if (left.stars !== right.stars) return right.stars - left.stars;
+    return left.title.localeCompare(right.title);
+  });
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

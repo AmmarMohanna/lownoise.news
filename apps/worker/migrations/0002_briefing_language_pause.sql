@@ -1,2 +1,2 @@
-ALTER TABLE briefings ADD COLUMN language TEXT NOT NULL DEFAULT 'en';
-ALTER TABLE briefings ADD COLUMN paused INTEGER NOT NULL DEFAULT 0;
+-- No-op.
+-- The initial schema already includes language and paused columns.

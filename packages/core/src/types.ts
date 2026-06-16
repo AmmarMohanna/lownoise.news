@@ -1,14 +1,18 @@
 export type SourceType = "channel" | "group";
+export type BriefingLanguage = "en" | "ar" | "fr";
 
 export interface BriefingConfig {
   id: string;
+  ownerAccountId: string;
+  ownerUsername: string;
   slug: string;
   title: string;
+  stars: number;
   interestProfile: string;
   styleInstruction?: string;
   publicFeedEnabled: boolean;
   paused: boolean;
-  language: "en" | "ar";
+  language: BriefingLanguage;
   retentionDays: number;
 }
 

@@ -6,19 +6,65 @@ import {
   type MediaReference,
   type NormalizedMessage
 } from "@lownoise/core";
-import type { Env, HealthStatus, Repository, TelegramSourceRecord } from "./types";
+import type {
+  AccountRecord,
+  AccountRole,
+  AccountWithStats,
+  AuthTokenPurpose,
+  AuthTokenRecord,
+  HealthStatus,
+  ProcessingJobRecord,
+  ProcessingJobState,
+  Repository,
+  TelegramSourceRecord,
+  UsernameAliasRecord
+} from "./types";
 
 type DbValue = string | number | null;
 
+interface AccountRow {
+  id: string;
+  email: string;
+  normalized_email: string;
+  username: string;
+  role: AccountRole;
+  password_hash: string;
+  email_verified_at: string | null;
+  disabled_at: string | null;
+  created_at: string;
+  updated_at: string;
+  briefing_count?: number;
+}
+
+interface UsernameAliasRow {
+  username: string;
+  account_id: string;
+  is_current: number;
+  created_at: string;
+}
+
+interface AuthTokenRow {
+  id: string;
+  account_id: string;
+  purpose: AuthTokenPurpose;
+  token_hash: string;
+  expires_at: string;
+  consumed_at: string | null;
+  created_at: string;
+}
+
 interface BriefingRow {
   id: string;
+  owner_account_id: string;
+  owner_username: string;
   slug: string;
   title: string;
+  stars?: number;
   interest_profile: string;
   style_instruction: string | null;
   public_feed_enabled: number;
   paused?: number;
-  language?: "en" | "ar" | null;
+  language?: "en" | "ar" | "fr" | null;
   retention_days: number;
 }
 
@@ -71,21 +117,234 @@ interface EvidenceRow {
   media_json: string;
 }
 
+interface ProcessingJobRow {
+  id: string;
+  briefing_id: string;
+  raw_message_id: string;
+  state: ProcessingJobState;
+  error: string | null;
+  updated_at: string;
+}
+
 export class D1Repository implements Repository {
   constructor(private readonly db: D1Database) {}
 
-  async ensureDefaultBriefing(now = new Date()): Promise<BriefingConfig> {
-    const existing = await this.getBriefingBySlug(personalNewsBriefing.slug);
-    if (existing) return existing;
-    return this.upsertBriefing(personalNewsBriefing, now);
+  async createAccount(input: {
+    email: string;
+    username: string;
+    role: AccountRole;
+    passwordHash: string;
+    emailVerifiedAt?: string;
+  }, now = new Date()): Promise<AccountRecord> {
+    const id = `account_${crypto.randomUUID()}`;
+    const timestamp = now.toISOString();
+    await this.db
+      .prepare(
+        `INSERT INTO accounts (
+          id, email, normalized_email, username, role, password_hash, email_verified_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        id,
+        input.email,
+        input.email,
+        input.username,
+        input.role,
+        input.passwordHash,
+        input.emailVerifiedAt ?? null,
+        timestamp,
+        timestamp
+      )
+      .run();
+    await this.db
+      .prepare("INSERT INTO username_aliases (username, account_id, is_current, created_at) VALUES (?, ?, 1, ?)")
+      .bind(input.username, id, timestamp)
+      .run();
+    const account = await this.getAccountById(id);
+    if (!account) throw new Error("Failed to create account");
+    return account;
   }
 
-  async listBriefings(): Promise<BriefingConfig[]> {
-    const rows = await all<BriefingRow>(
+  async listAccounts(): Promise<AccountWithStats[]> {
+    const rows = await all<AccountRow>(
       this.db.prepare(
-        "SELECT id, slug, title, interest_profile, style_instruction, public_feed_enabled, paused, language, retention_days FROM briefings ORDER BY created_at ASC"
+        `SELECT accounts.*, COUNT(briefings.id) as briefing_count
+        FROM accounts
+        LEFT JOIN briefings ON briefings.owner_account_id = accounts.id
+        GROUP BY accounts.id
+        ORDER BY accounts.created_at ASC`
       )
     );
+    return rows.map(rowToAccountWithStats);
+  }
+
+  async getAccountById(id: string): Promise<AccountRecord | null> {
+    const row = await first<AccountRow>(this.db.prepare("SELECT * FROM accounts WHERE id = ?").bind(id));
+    return row ? rowToAccount(row) : null;
+  }
+
+  async getAccountByEmail(email: string): Promise<(AccountRecord & { passwordHash: string }) | null> {
+    const row = await first<AccountRow>(this.db.prepare("SELECT * FROM accounts WHERE normalized_email = ?").bind(email));
+    return row ? { ...rowToAccount(row), passwordHash: row.password_hash } : null;
+  }
+
+  async getAccountByUsername(username: string): Promise<AccountRecord | null> {
+    const row = await first<AccountRow>(this.db.prepare("SELECT * FROM accounts WHERE username = ?").bind(username));
+    return row ? rowToAccount(row) : null;
+  }
+
+  async resolveUsernameAlias(username: string): Promise<{ account: AccountRecord; alias: UsernameAliasRecord } | null> {
+    const row = await first<UsernameAliasRow>(
+      this.db.prepare("SELECT * FROM username_aliases WHERE username = ?").bind(username)
+    );
+    if (!row) return null;
+    const account = await this.getAccountById(row.account_id);
+    if (!account) return null;
+    return { account, alias: rowToUsernameAlias(row) };
+  }
+
+  async updateAccount(input: {
+    id: string;
+    username?: string;
+    role?: AccountRole;
+    disabled?: boolean;
+    emailVerifiedAt?: string;
+    passwordHash?: string;
+  }, now = new Date()): Promise<AccountRecord> {
+    const existing = await this.getAccountById(input.id);
+    if (!existing) throw new Error("account not found");
+
+    const timestamp = now.toISOString();
+    const nextUsername = input.username ?? existing.username;
+    if (input.username && input.username !== existing.username) {
+      await this.db
+        .prepare("UPDATE username_aliases SET is_current = 0 WHERE account_id = ? AND is_current = 1")
+        .bind(input.id)
+        .run();
+      const existingAlias = await first<UsernameAliasRow>(
+        this.db.prepare("SELECT * FROM username_aliases WHERE username = ?").bind(input.username)
+      );
+      if (existingAlias?.account_id === input.id) {
+        await this.db
+          .prepare("UPDATE username_aliases SET is_current = 1 WHERE username = ? AND account_id = ?")
+          .bind(input.username, input.id)
+          .run();
+      } else {
+        await this.db
+          .prepare("INSERT INTO username_aliases (username, account_id, is_current, created_at) VALUES (?, ?, 1, ?)")
+          .bind(input.username, input.id, timestamp)
+          .run();
+      }
+    }
+
+    await this.db
+      .prepare(
+        `UPDATE accounts
+        SET username = ?,
+          role = ?,
+          disabled_at = ?,
+          email_verified_at = COALESCE(?, email_verified_at),
+          password_hash = COALESCE(?, password_hash),
+          updated_at = ?
+        WHERE id = ?`
+      )
+      .bind(
+        nextUsername,
+        input.role ?? existing.role,
+        input.disabled === undefined ? existing.disabledAt ?? null : input.disabled ? timestamp : null,
+        input.emailVerifiedAt ?? null,
+        input.passwordHash ?? null,
+        timestamp,
+        input.id
+      )
+      .run();
+    const account = await this.getAccountById(input.id);
+    if (!account) throw new Error("account not found");
+    return account;
+  }
+
+  async countAdmins(): Promise<number> {
+    const row = await first<{ count: number }>(
+      this.db.prepare("SELECT COUNT(*) as count FROM accounts WHERE role = 'admin' AND disabled_at IS NULL")
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  async createAuthToken(input: {
+    accountId: string;
+    purpose: AuthTokenPurpose;
+    tokenHash: string;
+    expiresAt: string;
+  }, now = new Date()): Promise<AuthTokenRecord> {
+    const id = `token_${crypto.randomUUID()}`;
+    await this.db
+      .prepare(
+        `INSERT INTO auth_tokens (id, account_id, purpose, token_hash, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .bind(id, input.accountId, input.purpose, input.tokenHash, input.expiresAt, now.toISOString())
+      .run();
+    const token = await this.getAuthToken(input.tokenHash, input.purpose);
+    if (!token) throw new Error("Failed to create auth token");
+    return token;
+  }
+
+  async getAuthToken(tokenHash: string, purpose: AuthTokenPurpose): Promise<AuthTokenRecord | null> {
+    const row = await first<AuthTokenRow>(
+      this.db
+        .prepare("SELECT * FROM auth_tokens WHERE token_hash = ? AND purpose = ?")
+        .bind(tokenHash, purpose)
+    );
+    return row ? rowToAuthToken(row) : null;
+  }
+
+  async consumeAuthToken(id: string, now = new Date()): Promise<void> {
+    await this.db
+      .prepare("UPDATE auth_tokens SET consumed_at = ? WHERE id = ?")
+      .bind(now.toISOString(), id)
+      .run();
+  }
+
+  async countRecentAuthAttempts(input: { key: string; action: string; since: string }): Promise<number> {
+    const row = await first<{ count: number }>(
+      this.db
+        .prepare("SELECT COUNT(*) as count FROM auth_attempts WHERE key = ? AND action = ? AND created_at >= ?")
+        .bind(input.key, input.action, input.since)
+    );
+    return Number(row?.count ?? 0);
+  }
+
+  async recordAuthAttempt(input: { key: string; action: string }, now = new Date()): Promise<void> {
+    await this.db
+      .prepare("INSERT INTO auth_attempts (id, key, action, created_at) VALUES (?, ?, ?, ?)")
+      .bind(`attempt_${crypto.randomUUID()}`, input.key, input.action, now.toISOString())
+      .run();
+  }
+
+  async ensureDefaultBriefing(account: AccountRecord, now = new Date()): Promise<BriefingConfig> {
+    const existing = await this.getBriefingBySlug(account.id, personalNewsBriefing.slug);
+    if (existing) return existing;
+    return this.upsertBriefing(
+      {
+        ...personalNewsBriefing,
+        id: `briefing_${account.id}_personal`,
+        ownerAccountId: account.id,
+        ownerUsername: account.username
+      },
+      now
+    );
+  }
+
+  async listBriefings(accountId?: string): Promise<BriefingConfig[]> {
+    const sql =
+      `SELECT briefings.*, accounts.username as owner_username
+      FROM briefings
+      JOIN accounts ON accounts.id = briefings.owner_account_id` +
+      (accountId ? " WHERE briefings.owner_account_id = ?" : "") +
+      " ORDER BY briefings.stars DESC, briefings.created_at ASC";
+    const rows = accountId
+      ? await all<BriefingRow>(this.db.prepare(sql).bind(accountId))
+      : await all<BriefingRow>(this.db.prepare(sql));
     return rows.map(rowToBriefing);
   }
 
@@ -93,22 +352,65 @@ export class D1Repository implements Repository {
     const row = await first<BriefingRow>(
       this.db
         .prepare(
-          "SELECT id, slug, title, interest_profile, style_instruction, public_feed_enabled, paused, language, retention_days FROM briefings WHERE id = ?"
+          `SELECT briefings.*, accounts.username as owner_username
+          FROM briefings
+          JOIN accounts ON accounts.id = briefings.owner_account_id
+          WHERE briefings.id = ?`
         )
         .bind(id)
     );
     return row ? rowToBriefing(row) : null;
   }
 
-  async getBriefingBySlug(slug: string): Promise<BriefingConfig | null> {
+  async getBriefingBySlug(ownerAccountId: string, slug: string): Promise<BriefingConfig | null> {
     const row = await first<BriefingRow>(
       this.db
         .prepare(
-          "SELECT id, slug, title, interest_profile, style_instruction, public_feed_enabled, paused, language, retention_days FROM briefings WHERE slug = ?"
+          `SELECT briefings.*, accounts.username as owner_username
+          FROM briefings
+          JOIN accounts ON accounts.id = briefings.owner_account_id
+          WHERE briefings.owner_account_id = ? AND briefings.slug = ?`
         )
-        .bind(slug)
+        .bind(ownerAccountId, slug)
     );
     return row ? rowToBriefing(row) : null;
+  }
+
+  async hasBriefingStar(briefingId: string, voterId: string): Promise<boolean> {
+    const row = await first<{ voter_id: string }>(
+      this.db
+        .prepare("SELECT voter_id FROM briefing_stars WHERE briefing_id = ? AND voter_id = ?")
+        .bind(briefingId, voterId)
+    );
+    return Boolean(row?.voter_id);
+  }
+
+  async setBriefingStar(briefingId: string, voterId: string, starred: boolean, now = new Date()): Promise<number> {
+    if (starred) {
+      await this.db
+        .prepare("INSERT OR IGNORE INTO briefing_stars (briefing_id, voter_id, created_at) VALUES (?, ?, ?)")
+        .bind(briefingId, voterId, now.toISOString())
+        .run();
+    } else {
+      await this.db
+        .prepare("DELETE FROM briefing_stars WHERE briefing_id = ? AND voter_id = ?")
+        .bind(briefingId, voterId)
+        .run();
+    }
+
+    const countRow = await first<{ count: number }>(
+      this.db
+        .prepare("SELECT COUNT(*) as count FROM briefing_stars WHERE briefing_id = ?")
+        .bind(briefingId)
+    );
+    const nextStars = Number(countRow?.count ?? 0);
+
+    await this.db
+      .prepare("UPDATE briefings SET stars = ?, updated_at = ? WHERE id = ?")
+      .bind(nextStars, now.toISOString(), briefingId)
+      .run();
+
+    return nextStars;
   }
 
   async upsertBriefing(input: BriefingConfig, now = new Date()): Promise<BriefingConfig> {
@@ -116,11 +418,13 @@ export class D1Repository implements Repository {
     await this.db
       .prepare(
         `INSERT INTO briefings (
-          id, slug, title, interest_profile, style_instruction, public_feed_enabled, paused, language, retention_days, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, owner_account_id, slug, title, stars, interest_profile, style_instruction,
+          public_feed_enabled, paused, language, retention_days, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           slug = excluded.slug,
           title = excluded.title,
+          stars = excluded.stars,
           interest_profile = excluded.interest_profile,
           style_instruction = excluded.style_instruction,
           public_feed_enabled = excluded.public_feed_enabled,
@@ -131,8 +435,10 @@ export class D1Repository implements Repository {
       )
       .bind(
         input.id,
+        input.ownerAccountId,
         input.slug,
         input.title,
+        input.stars,
         input.interestProfile,
         input.styleInstruction ?? null,
         input.publicFeedEnabled ? 1 : 0,
@@ -143,7 +449,12 @@ export class D1Repository implements Repository {
         timestamp
       )
       .run();
-    return input;
+    const saved = await this.getBriefingById(input.id);
+    return saved ?? input;
+  }
+
+  async deleteBriefing(id: string): Promise<void> {
+    await this.db.prepare("DELETE FROM briefings WHERE id = ?").bind(id).run();
   }
 
   async listSources(briefingId: string): Promise<TelegramSourceRecord[]> {
@@ -221,7 +532,7 @@ export class D1Repository implements Repository {
       )
       .run();
 
-    const source = (await this.listSources(briefingId)).find((item) => item.id === message.source.id);
+    const source = (await this.listSources(briefingId)).find((item) => item.id === sourceId);
     if (!source) throw new Error("Failed to upsert source");
     return source;
   }
@@ -289,6 +600,38 @@ export class D1Repository implements Repository {
     await this.db
       .prepare("UPDATE processing_jobs SET state = 'failed', error = ?, updated_at = ? WHERE id = ?")
       .bind(error, now.toISOString(), jobId)
+      .run();
+  }
+
+  async listProcessingJobs(input?: {
+    briefingId?: string;
+    states?: ProcessingJobState[];
+    limit?: number;
+  }): Promise<ProcessingJobRecord[]> {
+    const states = input?.states?.length ? input.states : ["queued", "completed", "failed"];
+    const placeholders = states.map(() => "?").join(", ");
+    const values: DbValue[] = [...states];
+    let sql =
+      `SELECT id, briefing_id, raw_message_id, state, error, updated_at
+       FROM processing_jobs
+       WHERE state IN (${placeholders})`;
+
+    if (input?.briefingId) {
+      sql += " AND briefing_id = ?";
+      values.push(input.briefingId);
+    }
+
+    sql += " ORDER BY updated_at DESC LIMIT ?";
+    values.push(input?.limit ?? 50);
+
+    const rows = await all<ProcessingJobRow>(this.db.prepare(sql).bind(...values));
+    return rows.map(rowToProcessingJob);
+  }
+
+  async requeueProcessingJob(jobId: string, now = new Date()): Promise<void> {
+    await this.db
+      .prepare("UPDATE processing_jobs SET state = 'queued', error = NULL, updated_at = ? WHERE id = ?")
+      .bind(now.toISOString(), jobId)
       .run();
   }
 
@@ -376,8 +719,8 @@ export class D1Repository implements Repository {
       .run();
   }
 
-  async listFeedItems(slug: string, includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
-    const briefing = await this.getBriefingBySlug(slug);
+  async listFeedItems(ownerAccountId: string, slug: string, includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
+    const briefing = await this.getBriefingBySlug(ownerAccountId, slug);
     if (!briefing) return [];
     if (!includePrivate && !briefing.publicFeedEnabled) return [];
     return this.getExistingItems(briefing.id, now);
@@ -401,8 +744,22 @@ export class D1Repository implements Repository {
         );
     const processing = { queued: 0, completed: 0, failed: 0 };
     for (const row of rows) processing[row.state] = row.count;
+    const latestPublishedRow = briefingId
+      ? await first<{ latest_published_at: string | null }>(
+          this.db
+            .prepare(
+              "SELECT MAX(item_at) as latest_published_at FROM briefing_items WHERE briefing_id = ? AND expires_at > ?"
+            )
+            .bind(briefingId, new Date().toISOString())
+        )
+      : await first<{ latest_published_at: string | null }>(
+          this.db
+            .prepare("SELECT MAX(item_at) as latest_published_at FROM briefing_items WHERE expires_at > ?")
+            .bind(new Date().toISOString())
+        );
     return {
       lastTelegramEventAt,
+      latestPublishedAt: latestPublishedRow?.latest_published_at ?? undefined,
       processing
     };
   }
@@ -429,6 +786,11 @@ export class D1Repository implements Repository {
       .run();
     await this.db.prepare("DELETE FROM briefing_items WHERE expires_at <= ?").bind(timestamp).run();
     await this.db.prepare("DELETE FROM clusters WHERE expires_at <= ?").bind(timestamp).run();
+    await this.db.prepare("DELETE FROM auth_tokens WHERE expires_at <= ?").bind(timestamp).run();
+    await this.db
+      .prepare("DELETE FROM auth_attempts WHERE created_at <= ?")
+      .bind(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString())
+      .run();
     return Number(result.meta.changes ?? 0);
   }
 
@@ -448,35 +810,217 @@ export class D1Repository implements Repository {
 }
 
 export class InMemoryRepository implements Repository {
+  accounts = new Map<string, AccountRecord & { passwordHash: string }>();
+  aliases = new Map<string, UsernameAliasRecord>();
+  tokens = new Map<string, AuthTokenRecord>();
+  attempts: Array<{ key: string; action: string; createdAt: string }> = [];
   briefings = new Map<string, BriefingConfig>();
   sources = new Map<string, TelegramSourceRecord>();
   rawMessages = new Map<string, NormalizedMessage>();
   itemsByBriefing = new Map<string, Map<string, BriefingItem>>();
-  jobs = new Map<string, { id: string; briefingId: string; rawMessageId: string; state: "queued" | "completed" | "failed"; error?: string }>();
+  starsByBriefing = new Map<string, Set<string>>();
+  jobs = new Map<string, {
+    id: string;
+    briefingId: string;
+    rawMessageId: string;
+    state: "queued" | "completed" | "failed";
+    error?: string;
+    updatedAt: string;
+  }>();
   settings = new Map<string, string>();
 
-  async ensureDefaultBriefing(): Promise<BriefingConfig> {
-    const existing = await this.getBriefingBySlug(personalNewsBriefing.slug);
-    if (existing) return existing;
-    this.briefings.set(personalNewsBriefing.id, { ...personalNewsBriefing });
-    return { ...personalNewsBriefing };
+  async createAccount(input: {
+    email: string;
+    username: string;
+    role: AccountRole;
+    passwordHash: string;
+    emailVerifiedAt?: string;
+  }, now = new Date()): Promise<AccountRecord> {
+    const id = `account_${this.accounts.size + 1}`;
+    const timestamp = now.toISOString();
+    const account = {
+      id,
+      email: input.email,
+      username: input.username,
+      role: input.role,
+      passwordHash: input.passwordHash,
+      emailVerifiedAt: input.emailVerifiedAt,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    this.accounts.set(id, account);
+    this.aliases.set(input.username, { username: input.username, accountId: id, isCurrent: true, createdAt: timestamp });
+    return rowlessAccount(account);
   }
 
-  async listBriefings(): Promise<BriefingConfig[]> {
-    return Array.from(this.briefings.values()).map((briefing) => ({ ...briefing }));
+  async listAccounts(): Promise<AccountWithStats[]> {
+    return Array.from(this.accounts.values()).map((account) => ({
+      ...rowlessAccount(account),
+      briefingCount: Array.from(this.briefings.values()).filter((briefing) => briefing.ownerAccountId === account.id).length
+    }));
+  }
+
+  async getAccountById(id: string): Promise<AccountRecord | null> {
+    const account = this.accounts.get(id);
+    return account ? rowlessAccount(account) : null;
+  }
+
+  async getAccountByEmail(email: string): Promise<(AccountRecord & { passwordHash: string }) | null> {
+    const account = Array.from(this.accounts.values()).find((item) => item.email === email);
+    return account ? { ...rowlessAccount(account), passwordHash: account.passwordHash } : null;
+  }
+
+  async getAccountByUsername(username: string): Promise<AccountRecord | null> {
+    const account = Array.from(this.accounts.values()).find((item) => item.username === username);
+    return account ? rowlessAccount(account) : null;
+  }
+
+  async resolveUsernameAlias(username: string): Promise<{ account: AccountRecord; alias: UsernameAliasRecord } | null> {
+    const alias = this.aliases.get(username);
+    if (!alias) return null;
+    const account = await this.getAccountById(alias.accountId);
+    if (!account) return null;
+    return { account, alias: { ...alias } };
+  }
+
+  async updateAccount(input: {
+    id: string;
+    username?: string;
+    role?: AccountRole;
+    disabled?: boolean;
+    emailVerifiedAt?: string;
+    passwordHash?: string;
+  }, now = new Date()): Promise<AccountRecord> {
+    const account = this.accounts.get(input.id);
+    if (!account) throw new Error("account not found");
+    const timestamp = now.toISOString();
+    if (input.username && input.username !== account.username) {
+      for (const alias of this.aliases.values()) {
+        if (alias.accountId === input.id && alias.isCurrent) alias.isCurrent = false;
+      }
+      this.aliases.set(input.username, { username: input.username, accountId: input.id, isCurrent: true, createdAt: timestamp });
+      account.username = input.username;
+    }
+    if (input.role) account.role = input.role;
+    if (input.disabled !== undefined) account.disabledAt = input.disabled ? timestamp : undefined;
+    if (input.emailVerifiedAt) account.emailVerifiedAt = input.emailVerifiedAt;
+    if (input.passwordHash) account.passwordHash = input.passwordHash;
+    account.updatedAt = timestamp;
+    return rowlessAccount(account);
+  }
+
+  async countAdmins(): Promise<number> {
+    return Array.from(this.accounts.values()).filter((account) => account.role === "admin" && !account.disabledAt).length;
+  }
+
+  async createAuthToken(input: {
+    accountId: string;
+    purpose: AuthTokenPurpose;
+    tokenHash: string;
+    expiresAt: string;
+  }, now = new Date()): Promise<AuthTokenRecord> {
+    const token = {
+      id: `token_${this.tokens.size + 1}`,
+      accountId: input.accountId,
+      purpose: input.purpose,
+      tokenHash: input.tokenHash,
+      expiresAt: input.expiresAt,
+      createdAt: now.toISOString()
+    };
+    this.tokens.set(token.id, token);
+    return { ...token };
+  }
+
+  async getAuthToken(tokenHash: string, purpose: AuthTokenPurpose): Promise<AuthTokenRecord | null> {
+    const token = Array.from(this.tokens.values()).find((item) => item.tokenHash === tokenHash && item.purpose === purpose);
+    return token ? { ...token } : null;
+  }
+
+  async consumeAuthToken(id: string, now = new Date()): Promise<void> {
+    const token = this.tokens.get(id);
+    if (token) token.consumedAt = now.toISOString();
+  }
+
+  async countRecentAuthAttempts(input: { key: string; action: string; since: string }): Promise<number> {
+    return this.attempts.filter(
+      (attempt) => attempt.key === input.key && attempt.action === input.action && attempt.createdAt >= input.since
+    ).length;
+  }
+
+  async recordAuthAttempt(input: { key: string; action: string }, now = new Date()): Promise<void> {
+    this.attempts.push({ ...input, createdAt: now.toISOString() });
+  }
+
+  async ensureDefaultBriefing(account: AccountRecord): Promise<BriefingConfig> {
+    const existing = await this.getBriefingBySlug(account.id, personalNewsBriefing.slug);
+    if (existing) return existing;
+    const briefing = {
+      ...personalNewsBriefing,
+      id: `briefing_${account.id}_personal`,
+      ownerAccountId: account.id,
+      ownerUsername: account.username
+    };
+    this.briefings.set(briefing.id, briefing);
+    return { ...briefing };
+  }
+
+  async listBriefings(accountId?: string): Promise<BriefingConfig[]> {
+    return Array.from(this.briefings.values())
+      .filter((briefing) => !accountId || briefing.ownerAccountId === accountId)
+      .map((briefing) => ({ ...briefing }));
   }
 
   async getBriefingById(id: string): Promise<BriefingConfig | null> {
     return this.briefings.get(id) ?? null;
   }
 
-  async getBriefingBySlug(slug: string): Promise<BriefingConfig | null> {
-    return Array.from(this.briefings.values()).find((briefing) => briefing.slug === slug) ?? null;
+  async getBriefingBySlug(ownerAccountId: string, slug: string): Promise<BriefingConfig | null> {
+    return Array.from(this.briefings.values()).find(
+      (briefing) => briefing.ownerAccountId === ownerAccountId && briefing.slug === slug
+    ) ?? null;
+  }
+
+  async hasBriefingStar(briefingId: string, voterId: string): Promise<boolean> {
+    return this.starsByBriefing.get(briefingId)?.has(voterId) ?? false;
+  }
+
+  async setBriefingStar(briefingId: string, voterId: string, starred: boolean): Promise<number> {
+    const votes = this.starsByBriefing.get(briefingId) ?? new Set<string>();
+    if (starred) votes.add(voterId);
+    else votes.delete(voterId);
+    this.starsByBriefing.set(briefingId, votes);
+
+    const briefing = this.briefings.get(briefingId);
+    if (briefing) briefing.stars = votes.size;
+    return votes.size;
   }
 
   async upsertBriefing(input: BriefingConfig): Promise<BriefingConfig> {
-    this.briefings.set(input.id, { ...input });
-    return { ...input };
+    const account = this.accounts.get(input.ownerAccountId);
+    this.briefings.set(input.id, {
+      ...input,
+      ownerUsername: account?.username ?? input.ownerUsername
+    });
+    return { ...this.briefings.get(input.id)! };
+  }
+
+  async deleteBriefing(id: string): Promise<void> {
+    this.briefings.delete(id);
+
+    for (const [sourceId, source] of this.sources) {
+      if (source.briefingId === id) this.sources.delete(sourceId);
+    }
+
+    for (const [rawMessageId, message] of this.rawMessages) {
+      if (message.id.startsWith(`${id}::`)) this.rawMessages.delete(rawMessageId);
+    }
+
+    this.itemsByBriefing.delete(id);
+    this.starsByBriefing.delete(id);
+
+    for (const [jobId, job] of this.jobs) {
+      if (job.briefingId === id) this.jobs.delete(jobId);
+    }
   }
 
   async listSources(briefingId: string): Promise<TelegramSourceRecord[]> {
@@ -528,22 +1072,56 @@ export class InMemoryRepository implements Repository {
     return this.rawMessages.get(id) ?? null;
   }
 
-  async createProcessingJob(briefingId: string, rawMessageId: string): Promise<string> {
+  async createProcessingJob(briefingId: string, rawMessageId: string, now = new Date()): Promise<string> {
     const id = `job_${this.jobs.size + 1}`;
-    this.jobs.set(id, { id, briefingId, rawMessageId, state: "queued" });
+    this.jobs.set(id, { id, briefingId, rawMessageId, state: "queued", updatedAt: now.toISOString() });
     return id;
   }
 
-  async completeProcessingJob(jobId: string): Promise<void> {
+  async completeProcessingJob(jobId: string, now = new Date()): Promise<void> {
     const job = this.jobs.get(jobId);
-    if (job) job.state = "completed";
+    if (job) {
+      job.state = "completed";
+      job.updatedAt = now.toISOString();
+    }
   }
 
-  async failProcessingJob(jobId: string, error: string): Promise<void> {
+  async failProcessingJob(jobId: string, error: string, now = new Date()): Promise<void> {
     const job = this.jobs.get(jobId);
     if (job) {
       job.state = "failed";
       job.error = error;
+      job.updatedAt = now.toISOString();
+    }
+  }
+
+  async listProcessingJobs(input?: {
+    briefingId?: string;
+    states?: ProcessingJobState[];
+    limit?: number;
+  }): Promise<ProcessingJobRecord[]> {
+    const allowed = new Set(input?.states ?? ["queued", "completed", "failed"]);
+    return Array.from(this.jobs.values())
+      .filter((job) => (!input?.briefingId || job.briefingId === input.briefingId) && allowed.has(job.state))
+      .slice()
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, input?.limit ?? 50)
+      .map((job) => ({
+        id: job.id,
+        briefingId: job.briefingId,
+        rawMessageId: job.rawMessageId,
+        state: job.state,
+        error: job.error,
+        updatedAt: job.updatedAt
+      }));
+  }
+
+  async requeueProcessingJob(jobId: string, now = new Date()): Promise<void> {
+    const job = this.jobs.get(jobId);
+    if (job) {
+      job.state = "queued";
+      delete job.error;
+      job.updatedAt = now.toISOString();
     }
   }
 
@@ -559,8 +1137,8 @@ export class InMemoryRepository implements Repository {
     this.itemsByBriefing.set(briefingId, scoped);
   }
 
-  async listFeedItems(slug: string, includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
-    const briefing = await this.getBriefingBySlug(slug);
+  async listFeedItems(ownerAccountId: string, slug: string, includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
+    const briefing = await this.getBriefingBySlug(ownerAccountId, slug);
     if (!briefing) return [];
     if (!includePrivate && !briefing.publicFeedEnabled) return [];
     return this.getExistingItems(briefing.id, now);
@@ -575,6 +1153,7 @@ export class InMemoryRepository implements Repository {
       lastTelegramEventAt:
         (briefingId ? this.settings.get(`last_telegram_event_at:${briefingId}`) : undefined) ??
         this.settings.get("last_telegram_event_at"),
+      latestPublishedAt: latestPublishedAt(this.itemsByBriefing, briefingId),
       processing
     };
   }
@@ -608,16 +1187,60 @@ function scopedSourceId(briefingId: string, sourceId: string): string {
   return `${briefingId}::${sourceId}`;
 }
 
+function rowToAccount(row: AccountRow): AccountRecord {
+  return {
+    id: row.id,
+    email: row.email,
+    username: row.username,
+    role: row.role,
+    emailVerifiedAt: row.email_verified_at ?? undefined,
+    disabledAt: row.disabled_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function rowToAccountWithStats(row: AccountRow): AccountWithStats {
+  return {
+    ...rowToAccount(row),
+    briefingCount: Number(row.briefing_count ?? 0)
+  };
+}
+
+function rowToUsernameAlias(row: UsernameAliasRow): UsernameAliasRecord {
+  return {
+    username: row.username,
+    accountId: row.account_id,
+    isCurrent: row.is_current === 1,
+    createdAt: row.created_at
+  };
+}
+
+function rowToAuthToken(row: AuthTokenRow): AuthTokenRecord {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    purpose: row.purpose,
+    tokenHash: row.token_hash,
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at ?? undefined,
+    createdAt: row.created_at
+  };
+}
+
 function rowToBriefing(row: BriefingRow): BriefingConfig {
   return {
     id: row.id,
+    ownerAccountId: row.owner_account_id,
+    ownerUsername: row.owner_username,
     slug: row.slug,
     title: row.title,
+    stars: row.stars ?? 0,
     interestProfile: row.interest_profile,
     styleInstruction: row.style_instruction ?? undefined,
     publicFeedEnabled: row.public_feed_enabled === 1,
     paused: row.paused === 1,
-    language: row.language === "ar" ? "ar" : "en",
+    language: row.language === "ar" || row.language === "fr" ? row.language : "en",
     retentionDays: row.retention_days
   };
 }
@@ -679,6 +1302,41 @@ function rowToEvidence(row: EvidenceRow): BriefingEvidence {
     text: row.text,
     links: parseJson<string[]>(row.links_json, []),
     media: parseJson<MediaReference[]>(row.media_json, [])
+  };
+}
+
+function rowToProcessingJob(row: ProcessingJobRow): ProcessingJobRecord {
+  return {
+    id: row.id,
+    briefingId: row.briefing_id,
+    rawMessageId: row.raw_message_id,
+    state: row.state,
+    error: row.error ?? undefined,
+    updatedAt: row.updated_at
+  };
+}
+
+function latestPublishedAt(
+  itemsByBriefing: Map<string, Map<string, BriefingItem>>,
+  briefingId?: string
+): string | undefined {
+  const values = briefingId
+    ? Array.from(itemsByBriefing.get(briefingId)?.values() ?? [])
+    : Array.from(itemsByBriefing.values()).flatMap((items) => Array.from(items.values()));
+  const latest = values.map((item) => item.itemAt).sort().at(-1);
+  return latest ?? undefined;
+}
+
+function rowlessAccount(account: AccountRecord & { passwordHash: string }): AccountRecord {
+  return {
+    id: account.id,
+    email: account.email,
+    username: account.username,
+    role: account.role,
+    emailVerifiedAt: account.emailVerifiedAt,
+    disabledAt: account.disabledAt,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt
   };
 }
 

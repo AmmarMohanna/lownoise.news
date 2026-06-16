@@ -6,8 +6,9 @@ V1 ingests public Telegram channel URLs, filters noisy posts against an interest
 
 ## What V1 Does
 
-- Private-by-default admin and feed.
-- Multiple self-hosted briefings with plain-language interest profiles.
+- Public email signup with verified accounts, password login/reset, and admin oversight.
+- User-owned briefings with plain-language interest profiles.
+- Username-scoped public feed URLs such as `/ammar-mohanna/my-sports-feed/`.
 - Telegram source setup by public `https://t.me/...` channel URL.
 - Rule-first filtering with optional OpenAI summaries through Cloudflare AI Gateway.
 - Expandable evidence for each briefing item.
@@ -22,6 +23,7 @@ V1 ingests public Telegram channel URLs, filters noisy posts against an interest
 - Cloudflare R2 for raw Telegram payload archives.
 - Cloudflare Queues for processing jobs.
 - Cloudflare Vectorize indexes published briefing items when AI Gateway embedding secrets are configured.
+- Cloudflare Email Service for account verification and password reset email.
 - Cloudflare AI Gateway routing to OpenAI for production summaries.
 - React + Vite for the admin/feed UI.
 - Hono for Worker routes.
@@ -62,6 +64,8 @@ See `.env.example` for descriptions.
 - `OPENAI_API_KEY`
 - `ADMIN_SESSION_SECRET`
 - `ADMIN_SETUP_TOKEN`
+- `EMAIL_FROM`
+- `PUBLIC_WEB_BASE_URL`
 
 `CLOUDFLARE_ZONE_ID` is only needed for custom-domain routing.
 
@@ -69,25 +73,47 @@ See `.env.example` for descriptions.
 
 1. Deploy the Worker.
 2. Open the admin page.
-3. Use `ADMIN_SETUP_TOKEN` once to create an admin password.
+3. Use `ADMIN_SETUP_TOKEN` once to create the first verified admin account.
 4. Add public Telegram channel URLs such as `https://t.me/LebUpdate`.
 5. Write the interest profile and save.
 6. Use `fetch latest` once to validate ingestion.
 7. Keep the feed private or explicitly enable public feed.
 
+Public users can sign up after setup. Each email can have only one account.
+Usernames are normalized into slugs, can be changed later, and previous
+usernames stay reserved as aliases that redirect to the current username.
+
 ## Routes
 
+- `POST /api/auth/setup`
+- `POST /api/auth/register`
+- `POST /api/auth/verify-email`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `POST /api/auth/password/forgot`
+- `POST /api/auth/password/reset`
+- `GET /api/me/account`
+- `PATCH /api/me/account`
+- `GET /api/me/briefings`
+- `POST /api/me/briefings`
+- `DELETE /api/me/briefings/:briefingId`
+- `GET /api/me/sources`
+- `POST /api/me/sources`
+- `POST /api/me/sources/refresh`
+- `DELETE /api/me/sources/:sourceId`
+- `GET /api/me/health`
+- `POST /api/me/processing/retry`
+- `GET /api/admin/accounts`
+- `PATCH /api/admin/accounts/:accountId`
 - `GET /api/admin/briefings`
-- `POST /api/admin/briefings`
-- `GET /api/admin/sources`
-- `POST /api/admin/sources`
-- `POST /api/admin/sources/refresh`
-- `DELETE /api/admin/sources/:sourceId`
-- `GET /api/admin/health`
-- `GET /api/feed/:briefingSlug`
-- `GET /api/feed/:briefingSlug/search?q=...`
+- `DELETE /api/admin/briefings/:briefingId`
+- `GET /api/feed/:username/:briefingSlug`
+- `GET /api/feed/:username/:briefingSlug/search?q=...`
+- `POST /api/feed/:username/:briefingSlug/star`
 
-There is intentionally no `/api/ask` endpoint.
+Public pages are served at `/:username/:briefingSlug/`. Previous username
+aliases redirect to the account's current username. Old `/feed/:slug` routes
+return not found. There is intentionally no `/api/ask` endpoint.
 
 ## Example Configs
 

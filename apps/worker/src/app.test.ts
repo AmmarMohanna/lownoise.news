@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { personalNewsBriefing } from "@lownoise/core";
 import { createApp } from "./app";
+import { hashPassword } from "./auth";
 import { processQueueMessage } from "./processor";
 import { InMemoryRepository } from "./repository";
 import type { Env, ProcessingJobMessage } from "./types";
@@ -21,13 +21,23 @@ class FakeQueue {
   }
 }
 
-function env(): Env {
+class FakeEmail {
+  messages: Array<{ to: string; subject: string; text?: string; html?: string }> = [];
+
+  async send(message: { to: string; subject: string; text?: string; html?: string }): Promise<void> {
+    this.messages.push(message);
+  }
+}
+
+function env(email = new FakeEmail()): Env {
   return {
     ADMIN_SESSION_SECRET: "admin-secret",
     ADMIN_SETUP_TOKEN: "setup-token",
     INTERNAL_MAINTENANCE_SECRET: "internal-secret",
-    PUBLIC_API_BASE_URL: "https://worker.test"
-  } as Env;
+    PUBLIC_WEB_BASE_URL: "https://lownoise.news",
+    EMAIL_FROM: "LowNoise.news <noreply@lownoise.news>",
+    EMAIL: email
+  } as unknown as Env;
 }
 
 const publicTelegramHtml = `
@@ -39,264 +49,343 @@ const publicTelegramHtml = `
     </div></div>
   </main>`;
 
-describe("worker app", () => {
-  it("redirects www and http custom-domain traffic to the canonical apex", async () => {
-    const app = createApp({ repository: new InMemoryRepository() });
-
-    const wwwResponse = await app.request("https://www.lownoise.news/feed/personal", {}, env());
-    expect(wwwResponse.status).toBe(301);
-    expect(wwwResponse.headers.get("location")).toBe("https://lownoise.news/feed/personal");
-
-    const httpResponse = await app.request("http://lownoise.news/feed/personal", {}, env());
-    expect(httpResponse.status).toBe(301);
-    expect(httpResponse.headers.get("location")).toBe("https://lownoise.news/feed/personal");
-
-    const demoResponse = await app.request("/demo", {}, env());
-    expect(demoResponse.status).toBe(302);
-    expect(demoResponse.headers.get("location")).toBe("/");
-  });
-
-  it("adds a public Telegram channel URL as an enabled source and queues posts", async () => {
+describe("worker app accounts", () => {
+  it("sets up the first verified admin account and session", async () => {
     const repo = new InMemoryRepository();
-    const bucket = new FakeBucket();
-    const queue = new FakeQueue();
-    const fetcher = vi.fn(async () => new Response(publicTelegramHtml, { status: 200 }));
-    const app = createApp({ repository: repo, bucket, queue, fetcher: fetcher as unknown as typeof fetch });
-    const briefing = await repo.ensureDefaultBriefing();
+    const app = createApp({ repository: repo });
 
     const response = await app.request(
-      "/api/admin/sources",
+      "/api/auth/setup",
       {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-lownoise-admin": "admin-secret"
-        },
-        body: JSON.stringify({ briefingId: briefing.id, url: "https://t.me/LebUpdate" })
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          email: "Admin@Example.com",
+          username: "Ammar Mohanna",
+          password: "password123",
+          setupToken: "setup-token"
+        })
       },
       env()
     );
 
     expect(response.status).toBe(200);
-    const payload = (await response.json()) as {
-      sources: Array<{ id: string; title: string; url?: string; enabled: boolean }>;
-      result: { fetched: number; queued: number };
-    };
-    expect(fetcher).toHaveBeenCalledWith("https://t.me/s/LebUpdate", expect.any(Object));
-    expect(payload.sources).toEqual([
-      expect.objectContaining({
-        id: `${briefing.id}::telegram_public_lebupdate`,
-        title: "Lebanon Updates",
-        url: "https://t.me/LebUpdate",
-        enabled: true
-      })
-    ]);
-    expect(payload.result).toMatchObject({ fetched: 1, queued: 1 });
-    expect(queue.messages).toHaveLength(1);
-    expect(Array.from(bucket.objects.keys())[0]).toContain(`telegram-public/${briefing.id}/LebUpdate/`);
-  });
-
-  it("scopes the same public channel independently across multiple briefings", async () => {
-    const repo = new InMemoryRepository();
-    const bucket = new FakeBucket();
-    const queue = new FakeQueue();
-    const fetcher = vi.fn(async () => new Response(publicTelegramHtml, { status: 200 }));
-    const app = createApp({ repository: repo, bucket, queue, fetcher: fetcher as unknown as typeof fetch });
-    const first = await repo.ensureDefaultBriefing();
-    const second = await repo.upsertBriefing({
-      ...personalNewsBriefing,
-      id: "briefing_second",
-      slug: "second",
-      title: "Second Briefing"
-    });
-
-    for (const briefing of [first, second]) {
-      const response = await app.request(
-        "/api/admin/sources",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-lownoise-admin": "admin-secret"
-          },
-          body: JSON.stringify({ briefingId: briefing.id, url: "https://t.me/LebUpdate" })
-        },
-        env()
-      );
-      expect(response.status).toBe(200);
-    }
-
-    const firstSources = await repo.listSources(first.id);
-    const secondSources = await repo.listSources(second.id);
-    expect(firstSources).toHaveLength(1);
-    expect(secondSources).toHaveLength(1);
-    expect(firstSources[0].id).not.toBe(secondSources[0].id);
-
-    const firstResult = await processQueueMessage(repo, queue.messages[0], new Date("2026-06-16T08:00:00.000Z"));
-    const secondResult = await processQueueMessage(repo, queue.messages[1], new Date("2026-06-16T08:01:00.000Z"));
-    expect(firstResult?.publishedItems).toHaveLength(1);
-    expect(secondResult?.publishedItems).toHaveLength(1);
-    expect(await repo.getExistingItems(first.id)).toHaveLength(1);
-    expect(await repo.getExistingItems(second.id)).toHaveLength(1);
-  });
-
-  it("skips refresh and processing when a briefing is paused", async () => {
-    const repo = new InMemoryRepository();
-    const bucket = new FakeBucket();
-    const queue = new FakeQueue();
-    const fetcher = vi.fn(async () => new Response(publicTelegramHtml, { status: 200 }));
-    const app = createApp({ repository: repo, bucket, queue, fetcher: fetcher as unknown as typeof fetch });
-    const briefing = await repo.ensureDefaultBriefing();
-
-    await app.request(
-      "/api/admin/briefings",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-lownoise-admin": "admin-secret"
-        },
-        body: JSON.stringify({ ...briefing, paused: true })
-      },
-      env()
-    );
-
-    await app.request(
-      "/api/admin/sources",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-lownoise-admin": "admin-secret"
-        },
-        body: JSON.stringify({ briefingId: briefing.id, url: "https://t.me/LebUpdate" })
-      },
-      env()
-    );
-
-    const refreshResponse = await app.request(
-      "/api/admin/sources/refresh",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-lownoise-admin": "admin-secret"
-        },
-        body: JSON.stringify({ briefingId: briefing.id })
-      },
-      env()
-    );
-    expect(await refreshResponse.json()).toMatchObject({ sources: [expect.any(Object)], results: [] });
-
-    const result = await processQueueMessage(repo, queue.messages[0], new Date("2026-06-16T08:00:00.000Z"));
-    expect(result).toBeUndefined();
-    expect(await repo.getExistingItems(briefing.id)).toHaveLength(0);
-
-    const healthResponse = await app.request(
-      `/api/admin/health?briefingId=${briefing.id}`,
-      { headers: { "x-lownoise-admin": "admin-secret" } },
-      env()
-    );
-    expect(await healthResponse.json()).toMatchObject({
-      health: {
-        processing: { queued: 0, completed: 1, failed: 0 }
+    expect(response.headers.get("set-cookie")).toContain("ln_session=");
+    expect(await response.json()).toMatchObject({
+      account: {
+        email: "admin@example.com",
+        username: "ammar-mohanna",
+        role: "admin"
       }
     });
+    expect(await repo.countAdmins()).toBe(1);
   });
 
-  it("processes enabled sources into published briefing items with evidence and search", async () => {
+  it("prevents multiple accounts for the same email and reserves usernames", async () => {
     const repo = new InMemoryRepository();
-    const briefing = await repo.ensureDefaultBriefing();
+    const app = createApp({ repository: repo });
+    const email = new FakeEmail();
+
+    const first = await app.request(
+      "/api/auth/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "User@Test.com", username: "User One", password: "password123" })
+      },
+      env(email)
+    );
+    expect(first.status).toBe(200);
+
+    const duplicateEmail = await app.request(
+      "/api/auth/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "user@test.com", username: "Other User", password: "password123" })
+      },
+      env(email)
+    );
+    expect(duplicateEmail.status).toBe(409);
+
+    const duplicateUsername = await app.request(
+      "/api/auth/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "other@test.com", username: "User One", password: "password123" })
+      },
+      env(email)
+    );
+    expect(duplicateUsername.status).toBe(409);
+  });
+
+  it("verifies email before login and supports password reset", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const email = new FakeEmail();
+
+    await app.request(
+      "/api/auth/register",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "user@test.com", username: "User One", password: "password123" })
+      },
+      env(email)
+    );
+
+    const rejectedLogin = await app.request(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "user@test.com", password: "password123" })
+      },
+      env(email)
+    );
+    expect(rejectedLogin.status).toBe(403);
+
+    const verifyToken = tokenFromMessage(email.messages[0].text);
+    const verifyResponse = await app.request(
+      "/api/auth/verify-email",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: verifyToken })
+      },
+      env(email)
+    );
+    expect(verifyResponse.status).toBe(200);
+
+    await app.request(
+      "/api/auth/password/forgot",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "user@test.com" })
+      },
+      env(email)
+    );
+    const resetToken = tokenFromMessage(email.messages[1].text);
+    const resetResponse = await app.request(
+      "/api/auth/password/reset",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: resetToken, password: "newpass123" })
+      },
+      env(email)
+    );
+    expect(resetResponse.status).toBe(200);
+
+    const loginResponse = await app.request(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "user@test.com", password: "newpass123" })
+      },
+      env(email)
+    );
+    expect(loginResponse.status).toBe(200);
+  });
+
+  it("scopes user feed management to the logged-in account", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const first = await createVerifiedUser(app, repo, "first@test.com", "First User");
+    const second = await createVerifiedUser(app, repo, "second@test.com", "Second User");
+
+    const firstBriefings = await app.request("/api/me/briefings", { headers: { cookie: first.cookie } }, env());
+    const firstPayload = (await firstBriefings.json()) as { briefings: Array<{ id: string }> };
+
+    const forbidden = await app.request(
+      `/api/me/sources?briefingId=${encodeURIComponent(firstPayload.briefings[0].id)}`,
+      { headers: { cookie: second.cookie } },
+      env()
+    );
+    expect(forbidden.status).toBe(404);
+  });
+
+  it("rejects cross-account source changes and duplicate owner feed slugs", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const first = await createVerifiedUser(app, repo, "first@test.com", "First User");
+    const second = await createVerifiedUser(app, repo, "second@test.com", "Second User");
+
+    const firstBriefingsResponse = await app.request("/api/me/briefings", { headers: { cookie: first.cookie } }, env());
+    const secondBriefingsResponse = await app.request("/api/me/briefings", { headers: { cookie: second.cookie } }, env());
+    const firstBriefings = (await firstBriefingsResponse.json()) as { briefings: Array<{ id: string }> };
+    const secondBriefings = (await secondBriefingsResponse.json()) as { briefings: Array<{ id: string }> };
+    const firstSource = await repo.upsertSourceFromMessage(firstBriefings.briefings[0].id, {
+      id: "message_1",
+      source: { id: "source_1", title: "First Source", type: "channel", username: "FirstSource" },
+      messageId: "1",
+      text: "first owner message",
+      links: [],
+      media: [],
+      postedAt: "2026-06-16T08:00:00.000Z",
+      receivedAt: "2026-06-16T08:00:00.000Z",
+      sourceUrl: "https://t.me/FirstSource/1",
+      expiresAt: "2026-07-01T08:00:00.000Z"
+    });
+
+    const toggleOtherSource = await app.request(
+      "/api/me/sources",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: second.cookie },
+        body: JSON.stringify({
+          briefingId: secondBriefings.briefings[0].id,
+          sourceId: firstSource.id,
+          enabled: true
+        })
+      },
+      env()
+    );
+    expect(toggleOtherSource.status).toBe(404);
+
+    const deleteOtherSource = await app.request(
+      `/api/me/sources/${encodeURIComponent(firstSource.id)}?briefingId=${encodeURIComponent(secondBriefings.briefings[0].id)}`,
+      { method: "DELETE", headers: { cookie: second.cookie } },
+      env()
+    );
+    expect(deleteOtherSource.status).toBe(404);
+    expect(await repo.getSource(firstSource.id)).not.toBeNull();
+
+    const createCollision = await app.request(
+      "/api/me/briefings",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: first.cookie },
+        body: JSON.stringify({
+          id: "briefing_collision",
+          slug: "personal",
+          title: "Another Feed",
+          interestProfile: "Track infrastructure",
+          publicFeedEnabled: false,
+          paused: false,
+          language: "en",
+          retentionDays: 15,
+          stars: 0
+        })
+      },
+      env()
+    );
+    expect(createCollision.status).toBe(409);
+  });
+
+  it("ingests enabled sources into the owner-scoped public feed", async () => {
+    const repo = new InMemoryRepository();
     const bucket = new FakeBucket();
     const queue = new FakeQueue();
     const fetcher = vi.fn(async () => new Response(publicTelegramHtml, { status: 200 }));
     const app = createApp({ repository: repo, bucket, queue, fetcher: fetcher as unknown as typeof fetch });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+
+    const briefingsResponse = await app.request("/api/me/briefings", { headers: { cookie: user.cookie } }, env());
+    const { briefings } = (await briefingsResponse.json()) as { briefings: Array<{ id: string; slug: string }> };
+    const briefingId = briefings[0].id;
 
     await app.request(
-      "/api/admin/sources",
+      "/api/me/briefings",
       {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-lownoise-admin": "admin-secret"
-        },
-        body: JSON.stringify({ briefingId: briefing.id, url: "https://t.me/LebUpdate" })
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({ ...briefings[0], title: "Personal Briefing", interestProfile: "Track Lebanese infrastructure", publicFeedEnabled: true, paused: false, language: "en", retentionDays: 15, stars: 0 })
       },
       env()
     );
+
+    const sourceResponse = await app.request(
+      "/api/me/sources",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({ briefingId, url: "https://t.me/LebUpdate" })
+      },
+      env()
+    );
+    expect(sourceResponse.status).toBe(200);
+    expect(queue.messages).toHaveLength(1);
 
     await processQueueMessage(repo, queue.messages[0], new Date("2026-06-16T08:00:00.000Z"));
 
-    const privateFeedResponse = await app.request(`/api/feed/${briefing.slug}`, {}, env());
-    expect(privateFeedResponse.status).toBe(401);
-
-    await app.request(
-      "/api/admin/briefings",
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-lownoise-admin": "admin-secret"
-        },
-        body: JSON.stringify({ ...briefing, publicFeedEnabled: true })
-      },
-      env()
-    );
-
-    const feedResponse = await app.request(`/api/feed/${briefing.slug}`, {}, env());
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
     expect(feedResponse.status).toBe(200);
-    const feed = (await feedResponse.json()) as {
-      items: Array<{ summary: string; evidence: Array<{ sourceTitle: string; sourceUrl: string }> }>;
-    };
-    expect(feed.items).toHaveLength(1);
+    const feed = (await feedResponse.json()) as { items: Array<{ summary: string; evidence: Array<{ sourceUrl: string }> }> };
     expect(feed.items[0].summary).toContain("Electricite du Liban");
-    expect(feed.items[0].evidence[0]).toMatchObject({
-      sourceTitle: "Lebanon Updates",
-      sourceUrl: "https://t.me/LebUpdate/10"
-    });
-    expect(JSON.stringify(feed)).not.toMatch(/confidence|sourceCount|chatbot|Q&A/i);
+    expect(feed.items[0].evidence[0].sourceUrl).toBe("https://t.me/LebUpdate/10");
 
-    const searchResponse = await app.request(`/api/feed/${briefing.slug}/search?q=power%20supply`, {}, env());
-    const search = (await searchResponse.json()) as { items: unknown[] };
-    expect(search.items).toHaveLength(1);
+    const oldRoute = await app.request("/api/feed/personal", {}, env());
+    expect(oldRoute.status).toBe(404);
   });
 
-  it("supports admin username and password login", async () => {
+  it("redirects reserved old usernames after username changes", async () => {
     const repo = new InMemoryRepository();
     const app = createApp({ repository: repo });
-
-    const setupResponse = await app.request(
-      "/api/admin/session",
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Old Name");
+    const briefingsResponse = await app.request("/api/me/briefings", { headers: { cookie: user.cookie } }, env());
+    const { briefings } = (await briefingsResponse.json()) as { briefings: Array<Record<string, unknown>> };
+    await app.request(
+      "/api/me/briefings",
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "admin", password: "admin", setupToken: "setup-token" })
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({ ...briefings[0], publicFeedEnabled: true })
       },
       env()
     );
-    expect(setupResponse.status).toBe(200);
 
-    const wrongUsernameResponse = await app.request(
-      "/api/admin/session",
+    const rename = await app.request(
+      "/api/me/account",
       {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "root", password: "admin" })
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({ username: "New Name" })
       },
       env()
     );
-    expect(wrongUsernameResponse.status).toBe(401);
+    expect(rename.status).toBe(200);
 
-    const loginResponse = await app.request(
-      "/api/admin/session",
+    const redirect = await app.request("/api/feed/old-name/personal", {}, env());
+    expect(redirect.status).toBe(301);
+    expect(redirect.headers.get("location")).toBe("http://localhost/api/feed/new-name/personal");
+  });
+
+  it("lets admins view and manage accounts while preserving at least one admin", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const admin = await createVerifiedUser(app, repo, "admin@test.com", "Admin User", "admin");
+    const user = await createVerifiedUser(app, repo, "user@test.com", "Normal User");
+
+    const accountsResponse = await app.request("/api/admin/accounts", { headers: { cookie: admin.cookie } }, env());
+    expect(accountsResponse.status).toBe(200);
+    const accounts = (await accountsResponse.json()) as { accounts: Array<{ id: string; email: string }> };
+    expect(accounts.accounts.map((account) => account.email)).toContain("user@test.com");
+
+    const disabled = await app.request(
+      `/api/admin/accounts/${user.account.id}`,
       {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "admin", password: "admin" })
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie: admin.cookie },
+        body: JSON.stringify({ disabled: true })
       },
       env()
     );
-    expect(loginResponse.status).toBe(200);
+    expect(disabled.status).toBe(200);
+
+    const rejectLastAdminDisable = await app.request(
+      `/api/admin/accounts/${admin.account.id}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie: admin.cookie },
+        body: JSON.stringify({ disabled: true })
+      },
+      env()
+    );
+    expect(rejectLastAdminDisable.status).toBe(400);
   });
 
   it("does not expose removed webhook or ask endpoints", async () => {
@@ -310,3 +399,36 @@ describe("worker app", () => {
     expect(webhookResponse.status).toBe(404);
   });
 });
+
+async function createVerifiedUser(
+  app: ReturnType<typeof createApp>,
+  repo: InMemoryRepository,
+  email: string,
+  username: string,
+  role: "admin" | "user" = "user"
+) {
+  const account = await repo.createAccount({
+    email,
+    username: username.toLowerCase().replace(/\s+/g, "-"),
+    role,
+    passwordHash: await hashPassword("password123"),
+    emailVerifiedAt: new Date("2026-06-16T10:00:00.000Z").toISOString()
+  });
+  await repo.ensureDefaultBriefing(account);
+  const login = await app.request(
+    "/api/auth/login",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password: "password123" })
+    },
+    env()
+  );
+  return { account, cookie: login.headers.get("set-cookie")?.split(";")[0] ?? "" };
+}
+
+function tokenFromMessage(text: string | undefined): string {
+  const token = text?.match(/token=([^\s]+)/)?.[1];
+  if (!token) throw new Error("token not found in email");
+  return decodeURIComponent(token);
+}

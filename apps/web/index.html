@@ -2,7 +2,162 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <script>
+      (() => {
+        const root = document.documentElement;
+        root.classList.add("app-pending");
+
+        try {
+          const theme = localStorage.getItem("ln_theme");
+          if (theme === "light" || theme === "dark") root.dataset.theme = theme;
+        } catch {}
+
+        const reveal = () => root.classList.remove("app-pending");
+
+        document.addEventListener(
+          "DOMContentLoaded",
+          () => {
+            const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+            if (stylesheets.length === 0) {
+              requestAnimationFrame(reveal);
+              return;
+            }
+
+            let pending = 0;
+            let finished = false;
+            const complete = () => {
+              pending -= 1;
+              if (pending <= 0 && !finished) {
+                finished = true;
+                requestAnimationFrame(reveal);
+              }
+            };
+
+            for (const sheet of stylesheets) {
+              if (sheet.sheet) continue;
+              pending += 1;
+              sheet.addEventListener("load", complete, { once: true });
+              sheet.addEventListener("error", complete, { once: true });
+            }
+
+            if (pending === 0 && !finished) {
+              finished = true;
+              requestAnimationFrame(reveal);
+            } else {
+              window.setTimeout(() => {
+                if (!finished) {
+                  finished = true;
+                  reveal();
+                }
+              }, 2000);
+            }
+          },
+          { once: true }
+        );
+      })();
+    </script>
+    <style>
+      html {
+        min-height: 100%;
+        background: #111214;
+        color-scheme: dark;
+      }
+
+      html[data-theme="light"] {
+        background: #f4f1eb;
+        color-scheme: light;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        min-height: 100dvh;
+        background: #111214;
+        color: #eeeef0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 15px;
+        line-height: 1.45;
+      }
+
+      html[data-theme="light"] body {
+        background: #f4f1eb;
+        color: #191a1c;
+      }
+
+      #root {
+        min-height: 100vh;
+        min-height: 100dvh;
+      }
+
+      html.app-pending #root {
+        visibility: hidden;
+      }
+
+      .shell {
+        width: min(1160px, 100%);
+        margin: 0 auto;
+        padding: 24px 18px 64px;
+        display: grid;
+        gap: 24px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border: 1px solid #30343b;
+        border-radius: 12px;
+        background: rgba(22, 24, 27, 0.86);
+      }
+
+      html[data-theme="light"] header {
+        border-color: #d6d0c5;
+        background: rgba(255, 253, 248, 0.86);
+      }
+
+      .header-primary,
+      .header-actions,
+      .brand-lockup,
+      .header-controls,
+      nav {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .page-heading {
+        display: grid;
+        gap: 6px;
+        max-width: 760px;
+      }
+
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 24px;
+        font-weight: 600;
+      }
+    </style>
+    <meta name="application-name" content="LowNoise.news" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="LowNoise.news" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f3f1eb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111111" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" media="(prefers-color-scheme: light)" href="/favicon-dark.svg" />
+    <link rel="icon" type="image/svg+xml" media="(prefers-color-scheme: dark)" href="/favicon-light.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <title>LowNoise.news</title>
   </head>
   <body>

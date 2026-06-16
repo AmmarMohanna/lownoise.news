@@ -42,11 +42,18 @@ const FLUFF_PATTERNS = [
   /\bmust watch\b/i
 ];
 
+const NO_UPDATE_PATTERNS = [
+  /\bno new (developments?|updates?)\b/i,
+  /\bno new verified information\b/i,
+  /\bnothing new to report\b/i,
+  /\bno major regional events\b/i
+];
+
 export function isRelevantToInterest(message: NormalizedMessage, briefing: BriefingConfig): boolean {
   const profileTokens = expandInterestTokens(significantTokens(briefing.interestProfile));
   if (profileTokens.length === 0) return true;
 
-  const messageTokens = expandInterestTokens(significantTokens(`${message.text} ${message.source.title}`));
+  const messageTokens = expandInterestTokens(significantTokens(message.text));
   const overlap = profileTokens.filter((token) => messageTokens.includes(token));
 
   if (overlap.length > 0) return true;
@@ -60,12 +67,63 @@ export function isRelevantToInterest(message: NormalizedMessage, briefing: Brief
 function expandInterestTokens(tokens: string[]): string[] {
   const expanded = new Set(tokens);
   const synonyms: Record<string, string[]> = {
-    lebanese: ["lebanon", "liban", "beirut"],
-    lebanon: ["lebanese", "liban", "beirut"],
-    liban: ["lebanon", "lebanese"],
-    economy: ["economic", "currency", "bank", "lira", "dollar"],
-    infrastructure: ["power", "electricity", "water", "internet", "road"],
-    security: ["army", "border", "strike", "safety", "incident"]
+    lebanese: ["lebanon", "liban", "beirut", "لبنان", "لبناني", "بيروت"],
+    lebanon: ["lebanese", "liban", "beirut", "لبنان", "لبناني", "بيروت"],
+    liban: ["lebanon", "lebanese", "لبنان", "لبناني"],
+    beirut: ["lebanon", "lebanese", "بيروت", "لبنان"],
+    economy: ["economic", "currency", "bank", "lira", "dollar", "economy", "اقتصاد", "اقتصادي", "عملة", "بنك", "مصرف", "ليرة", "دولار", "نفط", "برنت"],
+    infrastructure: [
+      "power",
+      "electricity",
+      "water",
+      "internet",
+      "road",
+      "airport",
+      "port",
+      "كهرباء",
+      "مياه",
+      "انترنت",
+      "طريق",
+      "أوتوستراد",
+      "بنية",
+      "تحتية",
+      "مطار",
+      "مرفأ"
+    ],
+    security: [
+      "army",
+      "border",
+      "strike",
+      "safety",
+      "incident",
+      "security",
+      "أمن",
+      "أمني",
+      "الجيش",
+      "حدود",
+      "غارة",
+      "ضربة",
+      "حادث",
+      "تصادم",
+      "جريح",
+      "جريحان",
+      "قتيل",
+      "قتلى",
+      "إصابة"
+    ],
+    public: ["public", "civil", "مدني", "عام", "عامة"],
+    safety: ["safety", "incident", "accident", "injury", "أمن", "سلامة", "حادث", "تصادم", "إصابة", "جريح", "جريحان"],
+    regional: ["regional", "region", "middleeast", "iran", "syria", "israel", "إقليمي", "المنطقة", "إيران", "إيراني", "سوريا", "إسرائيل", "أميركي", "الولايات"],
+    events: ["event", "events", "developments", "تطور", "تطورات", "حدث", "أحداث"],
+    لبنان: ["lebanon", "lebanese", "liban", "beirut", "لبناني", "بيروت"],
+    لبناني: ["lebanon", "lebanese", "لبنان", "بيروت"],
+    بيروت: ["beirut", "lebanon", "lebanese", "لبنان"],
+    اقتصاد: ["economy", "economic", "currency", "bank", "lira", "dollar", "اقتصادي", "عملة", "بنك", "مصرف", "ليرة", "دولار"],
+    أمني: ["security", "safety", "incident", "army", "border", "أمن", "الجيش", "حادث", "غارة", "ضربة"],
+    أمن: ["security", "safety", "incident", "army", "border", "أمني", "الجيش", "حادث", "غارة", "ضربة"],
+    بنية: ["infrastructure", "power", "electricity", "water", "internet", "road", "airport", "port", "تحتية", "كهرباء", "مياه", "طريق", "مطار", "مرفأ"],
+    تحتية: ["infrastructure", "power", "electricity", "water", "internet", "road", "airport", "port", "بنية", "كهرباء", "مياه", "طريق", "مطار", "مرفأ"],
+    إقليمي: ["regional", "region", "middleeast", "iran", "syria", "israel", "المنطقة", "إيران", "إيراني", "سوريا", "إسرائيل", "أميركي"]
   };
 
   for (const token of tokens) {
@@ -121,6 +179,14 @@ export function classifyNoise(message: NormalizedMessage): SuppressedMessage | n
       messageId: message.id,
       reason: "political_statement_without_new_facts",
       detail: "Statement does not add concrete facts."
+    };
+  }
+
+  if (NO_UPDATE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return {
+      messageId: message.id,
+      reason: "repeated_update",
+      detail: "Message says there is no meaningful new development."
     };
   }
 

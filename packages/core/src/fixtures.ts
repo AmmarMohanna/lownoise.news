@@ -2,8 +2,11 @@ import type { BriefingConfig, NormalizedMessage } from "./types";
 
 export const personalNewsBriefing: BriefingConfig = {
   id: "briefing_default",
+  ownerAccountId: "account_admin",
+  ownerUsername: "admin",
   slug: "personal",
   title: "Personal Briefing",
+  stars: 0,
   interestProfile:
     "Track Lebanese security, economy, infrastructure, public safety, and major regional events. Ignore routine political statements unless they change concrete facts.",
   styleInstruction: "Use calm, balanced wording.",

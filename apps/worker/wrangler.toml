@@ -7,26 +7,30 @@ workers_dev = true
 [assets]
 directory = "../web/dist"
 binding = "ASSETS"
+not_found_handling = "single-page-application"
 run_worker_first = true
 
 [vars]
-# Optional. If omitted, webhook registration uses the current Worker origin.
-# PUBLIC_API_BASE_URL = "https://your-domain.example"
-# PUBLIC_WEB_BASE_URL = "https://your-domain.example"
-CLOUDFLARE_ACCOUNT_ID = ""
+PUBLIC_API_BASE_URL = "https://lownoise.news"
+PUBLIC_WEB_BASE_URL = "https://lownoise.news"
+CLOUDFLARE_ACCOUNT_ID = "9cd5e9612de11953c367cbdec84ed662"
 CLOUDFLARE_AI_GATEWAY_ID = "default"
 OPENAI_MODEL = "gpt-4.1-mini"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+EMAIL_FROM = "LowNoise.news <noreply@lownoise.news>"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "lownoise"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "777782fe-6c8f-45c1-826d-365c40bc1210"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
 binding = "RAW_ARCHIVE"
 bucket_name = "lownoise-raw"
+
+[[send_email]]
+name = "EMAIL"
 
 [[queues.producers]]
 binding = "PROCESSING_QUEUE"
@@ -34,12 +38,20 @@ queue = "lownoise-processing"
 
 [[queues.consumers]]
 queue = "lownoise-processing"
-max_batch_size = 10
+max_batch_size = 1
 max_batch_timeout = 5
 
 [triggers]
-crons = ["*/3 * * * *"]
+crons = ["*/2 * * * *"]
 
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "lownoise-published"
+
+[[routes]]
+pattern = "lownoise.news"
+custom_domain = true
+
+[[routes]]
+pattern = "www.lownoise.news"
+custom_domain = true

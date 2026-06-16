@@ -1,4 +1,4 @@
-import { buildSummaryPrompt, type SummaryAdapter, type SummaryInput } from "@lownoise/core";
+import { buildSummaryPrompt, sanitizeSummary, type SummaryAdapter, type SummaryInput } from "@lownoise/core";
 import type { Env } from "./types";
 
 export class OpenAIGatewaySummaryAdapter implements SummaryAdapter {
@@ -50,7 +50,7 @@ export class OpenAIGatewaySummaryAdapter implements SummaryAdapter {
     };
     const content = payload.choices?.[0]?.message?.content?.trim();
     if (!content) throw new Error("AI Gateway returned an empty summary");
-    return content;
+    return sanitizeSummary(content);
   }
 }
 

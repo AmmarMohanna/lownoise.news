@@ -1,7 +1,7 @@
 import { clusterMessages } from "./clustering";
 import { classifyNoise, findDuplicate, isRelevantToInterest } from "./filtering";
 import { createEvidenceOnlySummary } from "./summarization";
-import { jaccardSimilarity, significantTokens, stableHash } from "./text";
+import { jaccardSimilarity, normalizeText, significantTokens, stableHash } from "./text";
 import type {
   BriefingEvidence,
   BriefingItem,
@@ -59,7 +59,7 @@ export function processMessages(input: ProcessingInput): ProcessingResult {
       continue;
     }
 
-    const item = createBriefingItem(input.briefing.retentionDays, cluster, evidence);
+    const item = createBriefingItem(input.briefing, cluster, evidence);
     if (item.summary) newItems.push(item);
   }
 
@@ -96,24 +96,23 @@ export function searchBriefingItems(items: BriefingItem[], query: string, now = 
     });
 }
 
-function createBriefingItem(
-  retentionDays: number,
-  cluster: ClusterCandidate,
-  evidence: BriefingEvidence[]
-): BriefingItem {
+function createBriefingItem(briefing: ProcessingInput["briefing"], cluster: ClusterCandidate, evidence: BriefingEvidence[]): BriefingItem {
   const itemAt = latestDate(cluster.messages.map((message) => message.postedAt));
-  const expiresAt = addDays(itemAt, retentionDays);
+  const expiresAt = addDays(itemAt, briefing.retentionDays);
   const summary = createEvidenceOnlySummary(
     {
       id: "summary",
+      ownerAccountId: briefing.ownerAccountId,
+      ownerUsername: briefing.ownerUsername,
       slug: "summary",
       title: "Summary",
+      stars: 0,
       interestProfile: "",
       styleInstruction: undefined,
       publicFeedEnabled: false,
       paused: false,
-      language: "en",
-      retentionDays
+      language: briefing.language,
+      retentionDays: briefing.retentionDays
     },
     evidence
   );
@@ -150,11 +149,25 @@ function findMergeTarget(
   newItems: BriefingItem[]
 ): BriefingItem | undefined {
   const candidates = [...existingItems, ...newItems];
-  const clusterTokens = significantTokens(cluster.messages.map((message) => message.text).join(" "));
+  const clusterTexts = cluster.messages.map((message) => message.text);
+  const clusterTokens = significantTokens(clusterTexts.join(" "));
 
   return candidates.find((item) => {
-    const itemTokens = significantTokens([item.summary, ...item.evidence.map((evidence) => evidence.text)].join(" "));
-    return jaccardSimilarity(clusterTokens, itemTokens) >= UPDATE_MERGE_THRESHOLD;
+    const itemTexts = [item.summary, ...item.evidence.map((evidence) => evidence.text)];
+    const itemTokens = significantTokens(itemTexts.join(" "));
+
+    if (
+      clusterTexts.some((text) =>
+        itemTexts.some((candidate) => normalizeText(candidate) === normalizeText(text))
+      )
+    ) {
+      return true;
+    }
+
+    return Math.max(
+      jaccardSimilarity(clusterTokens, itemTokens),
+      strongestTextSimilarity(clusterTexts, itemTexts)
+    ) >= UPDATE_MERGE_THRESHOLD;
   });
 }
 
@@ -168,6 +181,19 @@ function mergeIntoItem(
   item.evidence.push(...nextEvidence);
   item.mergedUpdateCount += nextEvidence.length;
   item.updatedAt = latestDate([...messages.map((message) => message.postedAt), item.updatedAt]);
+}
+
+function strongestTextSimilarity(left: string[], right: string[]): number {
+  let strongest = 0;
+
+  for (const leftText of left) {
+    const leftTokens = significantTokens(leftText);
+    for (const rightText of right) {
+      strongest = Math.max(strongest, jaccardSimilarity(leftTokens, significantTokens(rightText)));
+    }
+  }
+
+  return strongest;
 }
 
 function latestDate(dates: string[]): string {
