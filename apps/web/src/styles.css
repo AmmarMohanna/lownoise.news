@@ -331,6 +331,60 @@ nav a:hover {
   gap: 8px;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: start center;
+  padding:
+    calc(78px + env(safe-area-inset-top))
+    calc(18px + env(safe-area-inset-right))
+    calc(24px + env(safe-area-inset-bottom))
+    calc(18px + env(safe-area-inset-left));
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.54);
+  backdrop-filter: blur(4px);
+}
+
+.modal {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+}
+
+.account-form,
+.account-actions {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.account-actions {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+
 .actions,
 .feed-tools,
 .evidence-links,
@@ -767,6 +821,19 @@ summary {
 
   .header-controls {
     justify-content: flex-end;
+  }
+
+  .modal-backdrop {
+    padding:
+      calc(58px + env(safe-area-inset-top))
+      calc(12px + env(safe-area-inset-right))
+      calc(18px + env(safe-area-inset-bottom))
+      calc(12px + env(safe-area-inset-left));
+  }
+
+  .account-actions {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   nav {

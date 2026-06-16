@@ -112,7 +112,11 @@ export async function resetPassword(token: string, password: string): Promise<vo
   });
 }
 
-export async function updateAccount(input: { username?: string }): Promise<{ account: AccountRecord; briefings: BriefingConfig[] }> {
+export async function updateAccount(input: {
+  username?: string;
+  currentPassword?: string;
+  newPassword?: string;
+}): Promise<{ account: AccountRecord; briefings: BriefingConfig[] }> {
   return requestJson<{ account: AccountRecord; briefings: BriefingConfig[] }>("/api/me/account", {
     method: "PATCH",
     body: JSON.stringify(input)

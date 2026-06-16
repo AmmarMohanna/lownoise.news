@@ -398,6 +398,56 @@ describe("worker app accounts", () => {
     expect(redirect.headers.get("location")).toBe("http://localhost/api/feed/new-name/personal");
   });
 
+  it("requires the current password before changing account passwords", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Owner User");
+
+    const rejected = await app.request(
+      "/api/me/account",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({ currentPassword: "wrong-password", newPassword: "newpassword123" })
+      },
+      env()
+    );
+    expect(rejected.status).toBe(401);
+
+    const changed = await app.request(
+      "/api/me/account",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({ currentPassword: "password123", newPassword: "newpassword123" })
+      },
+      env()
+    );
+    expect(changed.status).toBe(200);
+
+    const oldLogin = await app.request(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "owner@test.com", password: "password123" })
+      },
+      env()
+    );
+    expect(oldLogin.status).toBe(401);
+
+    const newLogin = await app.request(
+      "/api/auth/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "owner@test.com", password: "newpassword123" })
+      },
+      env()
+    );
+    expect(newLogin.status).toBe(200);
+  });
+
   it("lets admins view and manage accounts while preserving at least one admin", async () => {
     const repo = new InMemoryRepository();
     const app = createApp({ repository: repo });

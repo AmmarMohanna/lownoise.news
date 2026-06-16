@@ -64,7 +64,12 @@ const passwordResetSchema = z.object({
 });
 
 const accountUpdateSchema = z.object({
-  username: z.string().min(1).optional()
+  username: z.string().min(1).optional(),
+  currentPassword: z.string().min(1).optional(),
+  newPassword: z.string().min(8).optional()
+}).refine((input) => !input.newPassword || Boolean(input.currentPassword), {
+  message: "current password is required",
+  path: ["currentPassword"]
 });
 
 const adminAccountUpdateSchema = z.object({
@@ -305,7 +310,15 @@ export function createApp(options: AppOptions = {}) {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : "username is already taken" }, 409);
     }
-    const updated = await repo.updateAccount({ id: account.id, username });
+    let passwordHash: string | undefined;
+    if (input.newPassword) {
+      const accountWithPassword = await repo.getAccountByEmail(account.email);
+      if (!accountWithPassword || !(await verifyPassword(input.currentPassword ?? "", accountWithPassword.passwordHash))) {
+        return c.json({ error: "invalid current password" }, 401);
+      }
+      passwordHash = await hashPassword(input.newPassword);
+    }
+    const updated = await repo.updateAccount({ id: account.id, username, passwordHash });
     return c.json({ account: publicAccount(updated), briefings: await repo.listBriefings(updated.id) });
   });
 

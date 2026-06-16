@@ -117,7 +117,7 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await expect(page.locator(".news-item").filter({ hasText: item.summary }).first()).toBeVisible();
 });
 
-test("admin setup shows account settings, owner feed URL, sources, health, and accounts", async ({ page }) => {
+test("admin setup keeps account settings tucked behind subtle controls", async ({ page }) => {
   await page.route("**/api/auth/session", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -195,10 +195,20 @@ test("admin setup shows account settings, owner feed URL, sources, health, and a
 
   await expect(page.getByRole("heading", { name: "admin" })).toBeVisible();
   await expect(page.getByLabel("interest profile")).toBeVisible();
+  await expect(page.getByLabel("username")).toHaveCount(0);
+  await page.getByRole("button", { name: "account settings" }).click();
+  await expect(page.getByRole("dialog", { name: "account" })).toBeVisible();
+  await expect(page.getByLabel("username")).toHaveValue("ammar-mohanna");
+  await expect(page.getByLabel("current password")).toBeVisible();
+  await expect(page.getByLabel("new password")).toBeVisible();
+  await page.getByRole("button", { name: "close account settings" }).click();
   await expect(page.getByRole("link", { name: "open", exact: true })).toHaveAttribute(
     "href",
     "/ammar-mohanna/personal/"
   );
   await expect(page.getByText("Beirut Local")).toBeVisible();
   await expect(page.getByRole("heading", { name: "accounts" })).toBeVisible();
+  await page.getByRole("button", { name: "manage ammar-mohanna" }).click();
+  await expect(page.getByRole("dialog", { name: "manage account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "disable account" })).toBeVisible();
 });

@@ -21,7 +21,8 @@ import {
   Star,
   Sun,
   Trash2,
-  User
+  User,
+  X
 } from "lucide-react";
 import type { BriefingConfig, BriefingItem } from "@lownoise/core";
 import { personalNewsBriefing } from "@lownoise/core";
@@ -86,6 +87,7 @@ function AdminPage() {
   const [sourceUrl, setSourceUrl] = useState("");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const selectedBriefingIdRef = useRef<string | null>(null);
 
   const account = session?.account ?? null;
@@ -176,6 +178,7 @@ function AdminPage() {
   }
 
   async function handleLogout() {
+    setAccountDialogOpen(false);
     await logout();
     setSession({ authenticated: false, setupRequired: false });
     setBriefings([]);
@@ -184,6 +187,22 @@ function AdminPage() {
     setHealth(null);
     setAccounts([]);
   }
+
+  const accountDialog = account && accountDialogOpen ? (
+    <AccountDialog
+      account={account}
+      onClose={() => setAccountDialogOpen(false)}
+      onLogout={handleLogout}
+      onSaved={async (nextAccount, nextBriefings, message) => {
+        setSession((current) => (current ? { ...current, account: nextAccount } : current));
+        setBriefings(nextBriefings);
+        setStatus(message);
+        if (selectedBriefingIdRef.current) await loadScopedData(selectedBriefingIdRef.current);
+        if (nextAccount.role === "admin") setAccounts(await listAccounts());
+        else setAccounts([]);
+      }}
+    />
+  ) : null;
 
   function patchSelectedBriefing(patch: Partial<BriefingConfig>) {
     if (!briefing) return;
@@ -228,84 +247,72 @@ function AdminPage() {
 
   if (!briefing) {
     return (
-      <Shell title="admin" onLogout={handleLogout}>
-        <section className="section">
-          <div className="section-title">
-            <Globe size={16} aria-hidden />
-            <h2>feeds</h2>
-          </div>
-          <button type="button" onClick={() => createBriefing()}>
-            <Plus size={15} aria-hidden /> new feed
-          </button>
-        </section>
-      </Shell>
+      <>
+        <Shell title="admin" onAccount={() => setAccountDialogOpen(true)}>
+          <section className="section">
+            <div className="section-title">
+              <Globe size={16} aria-hidden />
+              <h2>feeds</h2>
+            </div>
+            <button type="button" onClick={() => createBriefing()}>
+              <Plus size={15} aria-hidden /> new feed
+            </button>
+          </section>
+        </Shell>
+        {accountDialog}
+      </>
     );
   }
 
   return (
-    <Shell title="admin" onLogout={handleLogout} feed={briefing}>
-      <div className="admin-stack">
-        <section className="section">
-          <div className="section-title">
-            <User size={16} aria-hidden />
-            <h2>account</h2>
-          </div>
-          <AccountSettings
-            account={account}
-            onSaved={async (nextAccount, nextBriefings) => {
-              setSession({ ...session, account: nextAccount });
-              setBriefings(nextBriefings);
-              setStatus("username saved");
-              if (selectedBriefingId) await loadScopedData(selectedBriefingId);
-            }}
-          />
-        </section>
-
-        <section className="section">
-          <div className="section-title">
-            <Globe size={16} aria-hidden />
-            <h2>feeds</h2>
-          </div>
-          <div className="actions">
-            <button type="button" disabled={busyAction === "create-feed"} onClick={() => createBriefing()}>
-              <Plus size={15} aria-hidden /> new feed
-            </button>
-            {status ? <span className="muted">{status}</span> : null}
-          </div>
-          <div className="feed-list">
-            {orderedBriefings.map((item) => (
-              <div key={item.id} className={`feed-row${item.id === briefing.id ? " active" : ""}`}>
-                <button type="button" className="feed-select" onClick={() => setSelectedBriefingId(item.id)}>
-                  <span className="feed-title">{item.title}</span>
-                </button>
-                <div className="feed-flags">
-                  <span className="star-count"><Star size={13} aria-hidden /> {item.stars}</span>
-                  <span className="pill">{languageLabel(item.language)}</span>
-                  <span className="pill">{item.publicFeedEnabled ? "public" : "private"}</span>
-                  {item.paused ? <span className="pill">paused</span> : null}
+    <>
+      <Shell title="admin" onAccount={() => setAccountDialogOpen(true)} feed={briefing}>
+        <div className="admin-stack">
+          <section className="section">
+            <div className="section-title">
+              <Globe size={16} aria-hidden />
+              <h2>feeds</h2>
+            </div>
+            <div className="actions">
+              <button type="button" disabled={busyAction === "create-feed"} onClick={() => createBriefing()}>
+                <Plus size={15} aria-hidden /> new feed
+              </button>
+              {status ? <span className="muted">{status}</span> : null}
+            </div>
+            <div className="feed-list">
+              {orderedBriefings.map((item) => (
+                <div key={item.id} className={`feed-row${item.id === briefing.id ? " active" : ""}`}>
+                  <button type="button" className="feed-select" onClick={() => setSelectedBriefingId(item.id)}>
+                    <span className="feed-title">{item.title}</span>
+                  </button>
+                  <div className="feed-flags">
+                    <span className="star-count"><Star size={13} aria-hidden /> {item.stars}</span>
+                    <span className="pill">{languageLabel(item.language)}</span>
+                    <span className="pill">{item.publicFeedEnabled ? "public" : "private"}</span>
+                    {item.paused ? <span className="pill">paused</span> : null}
+                  </div>
+                  <a className="button-link" href={`/${item.ownerUsername}/${item.slug}/`}>open</a>
+                  <button type="button" disabled={!item.publicFeedEnabled} onClick={() => copyPublicFeedUrl(item)}>
+                    <Copy size={15} aria-hidden /> copy url
+                  </button>
                 </div>
-                <a className="button-link" href={`/${item.ownerUsername}/${item.slug}/`}>open</a>
-                <button type="button" disabled={!item.publicFeedEnabled} onClick={() => copyPublicFeedUrl(item)}>
-                  <Copy size={15} aria-hidden /> copy url
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
+              ))}
+            </div>
+          </section>
 
-        <div className="admin-grid">
-          <form
-            className="section"
-            onSubmit={async (event) => {
-              event.preventDefault();
-              try {
-                await persistBriefing(briefing);
-              } catch (cause) {
-                setStatus("");
-                setError(cause instanceof Error ? cause.message : String(cause));
-              }
-            }}
-          >
+          <div className="admin-grid">
+            <form
+              className="section"
+              onSubmit={async (event) => {
+                event.preventDefault();
+                try {
+                  await persistBriefing(briefing);
+                } catch (cause) {
+                  setStatus("");
+                  setError(cause instanceof Error ? cause.message : String(cause));
+                }
+              }}
+            >
             <div className="section-title">
               <Settings size={16} aria-hidden />
               <h2>setup</h2>
@@ -411,9 +418,9 @@ function AdminPage() {
               </button>
             </div>
             {error ? <p className="error">{error}</p> : null}
-          </form>
+            </form>
 
-          <section className="section">
+            <section className="section">
             <div className="section-title">
               <RefreshCw size={16} aria-hidden />
               <h2>sources</h2>
@@ -527,17 +534,19 @@ function AdminPage() {
                 </div>
               ))}
             </div>
-          </section>
-        </div>
+            </section>
+          </div>
 
-        {account.role === "admin" ? (
-          <AdminAccountsSection
-            accounts={accounts}
-            onReload={async () => setAccounts(await listAccounts())}
-          />
-        ) : null}
-      </div>
-    </Shell>
+          {account.role === "admin" ? (
+            <AdminAccountsSection
+              accounts={accounts}
+              onAccountsChanged={(nextAccounts) => setAccounts(nextAccounts)}
+            />
+          ) : null}
+        </div>
+      </Shell>
+      {accountDialog}
+    </>
   );
 
   function applySourceResponse(response: SourceRefreshResult) {
@@ -699,70 +708,326 @@ function ResetPasswordPage(props: { token: string }) {
   );
 }
 
-function AccountSettings(props: {
+function AccountDialog(props: {
   account: AccountRecord;
-  onSaved: (account: AccountRecord, briefings: BriefingConfig[]) => Promise<void>;
+  onClose: () => void;
+  onLogout: () => Promise<void>;
+  onSaved: (account: AccountRecord, briefings: BriefingConfig[], message: string) => Promise<void>;
 }) {
   const [username, setUsername] = useState(props.account.username);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState<"username" | "password" | "logout" | null>(null);
+  const usernameFieldRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setUsername(props.account.username);
+  }, [props.account.username]);
+
+  useEffect(() => {
+    usernameFieldRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [props.onClose]);
+
   return (
-    <form
-      className="source-add"
-      onSubmit={async (event) => {
-        event.preventDefault();
-        setError("");
-        try {
-          const result = await updateAccount({ username });
-          await props.onSaved(result.account, result.briefings);
-        } catch (cause) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        }
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) props.onClose();
       }}
     >
-      <label>
-        username
-        <input value={username} onChange={(event) => setUsername(event.target.value)} />
-      </label>
-      <button type="submit"><Save size={15} aria-hidden /> save</button>
-      <p className="muted">{props.account.email} / {props.account.role}</p>
-      {error ? <p className="error">{error}</p> : null}
-    </form>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="account-dialog-title">
+        <div className="modal-head">
+          <div className="section-title">
+            <User size={16} aria-hidden />
+            <h2 id="account-dialog-title">account</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label="close account settings" onClick={props.onClose}>
+            <X size={16} aria-hidden />
+          </button>
+        </div>
+
+        <div className="account-meta">
+          <span>{props.account.email}</span>
+          <span>{props.account.role}</span>
+        </div>
+
+        <form
+          className="account-form"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setError("");
+            setMessage("");
+            setBusy("username");
+            try {
+              const result = await updateAccount({ username });
+              await props.onSaved(result.account, result.briefings, "username saved");
+              setMessage("username saved");
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : String(cause));
+            } finally {
+              setBusy(null);
+            }
+          }}
+        >
+          <label>
+            username
+            <input ref={usernameFieldRef} value={username} autoComplete="username" onChange={(event) => setUsername(event.target.value)} />
+          </label>
+          <button type="submit" disabled={busy === "username"}>
+            <Save size={15} aria-hidden /> save username
+          </button>
+        </form>
+
+        <form
+          className="account-form"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setError("");
+            setMessage("");
+            setBusy("password");
+            try {
+              const result = await updateAccount({ currentPassword, newPassword });
+              await props.onSaved(result.account, result.briefings, "password changed");
+              setCurrentPassword("");
+              setNewPassword("");
+              setMessage("password changed");
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : String(cause));
+            } finally {
+              setBusy(null);
+            }
+          }}
+        >
+          <label>
+            current password
+            <input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={currentPassword}
+              onChange={(event) => setCurrentPassword(event.target.value)}
+            />
+          </label>
+          <label>
+            new password
+            <input
+              type="password"
+              autoComplete="new-password"
+              minLength={8}
+              required
+              value={newPassword}
+              onChange={(event) => setNewPassword(event.target.value)}
+            />
+          </label>
+          <button type="submit" disabled={busy === "password"}>
+            <Save size={15} aria-hidden /> change password
+          </button>
+        </form>
+
+        <div className="account-actions">
+          <button
+            type="button"
+            disabled={busy === "logout"}
+            onClick={async () => {
+              setBusy("logout");
+              await props.onLogout();
+            }}
+          >
+            <LogOut size={15} aria-hidden /> logout
+          </button>
+          {message ? <p className="muted">{message}</p> : null}
+          {error ? <p className="error">{error}</p> : null}
+        </div>
+      </section>
+    </div>
   );
 }
 
-function AdminAccountsSection(props: { accounts: AccountWithStats[]; onReload: () => Promise<void> }) {
+function AdminAccountsSection(props: {
+  accounts: AccountWithStats[];
+  onAccountsChanged: (accounts: AccountWithStats[]) => void;
+}) {
+  const [managedAccountId, setManagedAccountId] = useState<string | null>(null);
+  const managedAccount = props.accounts.find((account) => account.id === managedAccountId) ?? null;
+
   return (
-    <section className="section">
-      <div className="section-title">
-        <User size={16} aria-hidden />
-        <h2>accounts</h2>
-      </div>
-      <div className="source-list">
-        {props.accounts.map((account) => (
-          <div key={account.id} className="source-row">
-            <div className="source-copy">
-              <strong>{account.username}</strong>
-              <span className="muted">{account.email} / {account.role} / feeds {account.briefingCount}</span>
-              <span className="muted">{account.disabledAt ? "disabled" : account.emailVerifiedAt ? "verified" : "unverified"}</span>
+    <>
+      <section className="section">
+        <div className="section-title">
+          <User size={16} aria-hidden />
+          <h2>accounts</h2>
+        </div>
+        <div className="source-list">
+          {props.accounts.map((account) => (
+            <div key={account.id} className="source-row">
+              <div className="source-copy">
+                <strong>{account.username}</strong>
+                <span className="muted">{account.email} / {account.role} / feeds {account.briefingCount}</span>
+                <span className="muted">{account.disabledAt ? "disabled" : account.emailVerifiedAt ? "verified" : "unverified"}</span>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                aria-label={`manage ${account.username}`}
+                onClick={() => setManagedAccountId(account.id)}
+              >
+                <Settings size={15} aria-hidden />
+              </button>
             </div>
-            <div className="actions">
-              <button type="button" onClick={async () => {
-                await updateAdminAccount(account.id, { disabled: !account.disabledAt });
-                await props.onReload();
-              }}>
-                {account.disabledAt ? "enable" : "disable"}
-              </button>
-              <button type="button" onClick={async () => {
-                await updateAdminAccount(account.id, { role: account.role === "admin" ? "user" : "admin" });
-                await props.onReload();
-              }}>
-                {account.role === "admin" ? "make user" : "make admin"}
-              </button>
+          ))}
+        </div>
+      </section>
+      {managedAccount ? (
+        <AdminAccountDialog
+          account={managedAccount}
+          onClose={() => setManagedAccountId(null)}
+          onAccountsChanged={props.onAccountsChanged}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function AdminAccountDialog(props: {
+  account: AccountWithStats;
+  onClose: () => void;
+  onAccountsChanged: (accounts: AccountWithStats[]) => void;
+}) {
+  const [username, setUsername] = useState(props.account.username);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<"username" | "role" | "disabled" | null>(null);
+  const usernameFieldRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setUsername(props.account.username);
+  }, [props.account.username]);
+
+  useEffect(() => {
+    usernameFieldRef.current?.focus();
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") props.onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [props.onClose]);
+
+  async function updateAccountAndRefresh(input: { username?: string; role?: "admin" | "user"; disabled?: boolean }, nextMessage: string) {
+    setError("");
+    setMessage("");
+    const result = await updateAdminAccount(props.account.id, input);
+    props.onAccountsChanged(result.accounts);
+    setMessage(nextMessage);
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) props.onClose();
+      }}
+    >
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="admin-account-dialog-title">
+        <div className="modal-head">
+          <div className="section-title">
+            <User size={16} aria-hidden />
+            <h2 id="admin-account-dialog-title">manage account</h2>
+          </div>
+          <button type="button" className="icon-button" aria-label="close account management" onClick={props.onClose}>
+            <X size={16} aria-hidden />
+          </button>
+        </div>
+
+        <div className="account-meta">
+          <span>{props.account.email}</span>
+          <span>{props.account.disabledAt ? "disabled" : props.account.emailVerifiedAt ? "verified" : "unverified"}</span>
+          <span>{props.account.briefingCount} feed{props.account.briefingCount === 1 ? "" : "s"}</span>
+        </div>
+
+        <form
+          className="account-form"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            setBusy("username");
+            try {
+              await updateAccountAndRefresh({ username }, "username saved");
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : String(cause));
+            } finally {
+              setBusy(null);
+            }
+          }}
+        >
+          <label>
+            username
+            <input ref={usernameFieldRef} value={username} onChange={(event) => setUsername(event.target.value)} />
+          </label>
+          <button type="submit" disabled={busy === "username"}>
+            <Save size={15} aria-hidden /> save username
+          </button>
+        </form>
+
+        <div className="account-form">
+          <div className="field-group">
+            <span>role</span>
+            <div className="segmented" role="group" aria-label={`role for ${props.account.username}`}>
+              {(["user", "admin"] as const).map((role) => (
+                <button
+                  key={role}
+                  type="button"
+                  className={props.account.role === role ? "active" : ""}
+                  disabled={busy === "role"}
+                  aria-pressed={props.account.role === role}
+                  onClick={async () => {
+                    if (props.account.role === role) return;
+                    setBusy("role");
+                    try {
+                      await updateAccountAndRefresh({ role }, `role changed to ${role}`);
+                    } catch (cause) {
+                      setError(cause instanceof Error ? cause.message : String(cause));
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                >
+                  {role}
+                </button>
+              ))}
             </div>
           </div>
-        ))}
-      </div>
-    </section>
+          <button
+            type="button"
+            className={props.account.disabledAt ? "" : "danger-button"}
+            disabled={busy === "disabled"}
+            onClick={async () => {
+              setBusy("disabled");
+              try {
+                await updateAccountAndRefresh(
+                  { disabled: !props.account.disabledAt },
+                  props.account.disabledAt ? "account enabled" : "account disabled"
+                );
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : String(cause));
+              } finally {
+                setBusy(null);
+              }
+            }}
+          >
+            {props.account.disabledAt ? "enable account" : "disable account"}
+          </button>
+        </div>
+
+        {message ? <p className="muted">{message}</p> : null}
+        {error ? <p className="error">{error}</p> : null}
+      </section>
+    </div>
   );
 }
 
@@ -981,6 +1246,7 @@ function Shell(props: {
   title: string;
   children: React.ReactNode;
   feed?: Pick<BriefingConfig, "ownerUsername" | "slug" | "title">;
+  onAccount?: () => void;
   onLogout?: () => Promise<void>;
   pageLanguage?: "en" | "ar" | "fr";
 }) {
@@ -1018,6 +1284,11 @@ function Shell(props: {
             {props.feed ? <a href={`/${props.feed.ownerUsername}/${props.feed.slug}/`}>feed</a> : null}
           </nav>
           <div className="header-controls">
+            {props.onAccount ? (
+              <button type="button" className="icon-button" aria-label="account settings" onClick={props.onAccount}>
+                <Settings size={16} aria-hidden />
+              </button>
+            ) : null}
             <button type="button" className="icon-button" aria-label={`switch to ${theme === "dark" ? "light" : "dark"} mode`} onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}>
               {theme === "dark" ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
             </button>
