@@ -345,7 +345,7 @@ function AdminPage() {
 
   if (!session) {
     return (
-      <Shell title="create feed">
+      <Shell title="create">
         <p className="muted">loading</p>
       </Shell>
     );
@@ -375,7 +375,7 @@ function AdminPage() {
 
   if (!account) {
     return (
-      <Shell title="create feed" onLogout={handleLogout}>
+      <Shell title="create" onLogout={handleLogout}>
         <p className="error">session account unavailable</p>
       </Shell>
     );
@@ -384,7 +384,7 @@ function AdminPage() {
   if (!briefing) {
     return (
       <>
-        <Shell title="create feed" onAccount={() => setAccountDialogOpen(true)}>
+        <Shell title="create" onAccount={() => setAccountDialogOpen(true)}>
           <section className="section">
             <div className="section-title">
               <Globe size={16} aria-hidden />
@@ -402,7 +402,7 @@ function AdminPage() {
 
   return (
     <>
-      <Shell title="create feed" onAccount={() => setAccountDialogOpen(true)} feed={briefing}>
+      <Shell title="create" onAccount={() => setAccountDialogOpen(true)} feed={briefing}>
         <div className="admin-stack">
           <section className="section feed-section">
             <div className="section-title">
@@ -947,7 +947,7 @@ function VerifyEmailPage(props: { token: string }) {
           >
             verify email
           </button>
-          <a className="button-link" href="/" title="create feed">create feed</a>
+          <a className="button-link" href="/" title="create">create</a>
         </div>
       </section>
     </Shell>
@@ -1850,7 +1850,8 @@ function Shell(props: {
         </div>
         <div className="header-actions">
           <nav>
-            <a href="/" title="create feed">create feed</a>
+            <a href="/" title="create">create</a>
+            {props.feed ? <span className="nav-separator" aria-hidden="true">|</span> : null}
             {props.feed ? <a href={`/${props.feed.ownerUsername}/${props.feed.slug}/`}>feed</a> : null}
           </nav>
           <div className="header-controls">
@@ -1876,7 +1877,7 @@ function Shell(props: {
 }
 
 function getPageMeta(title: string): string {
-  if (title === "create feed") return "define the feed and add sources.";
+  if (title === "create") return "define the feed and add sources.";
   if (title === "briefing") return "Published briefing items only.";
   if (title.includes("Briefing")) return "Published briefing items only.";
   if (title === "verify email") return "Account verification.";

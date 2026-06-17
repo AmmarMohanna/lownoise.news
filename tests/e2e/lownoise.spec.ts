@@ -253,7 +253,7 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
 
   await page.goto("/");
 
-  await expect(page.getByRole("heading", { name: "create feed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "create" })).toBeVisible();
   await expect(page.getByText("define the feed and add sources.")).toBeVisible();
   await expect(page.getByLabel("interest profile")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "account settings" })).toHaveAttribute("title", "account settings");

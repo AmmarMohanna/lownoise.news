@@ -275,6 +275,15 @@ nav a {
   text-decoration: none;
 }
 
+.nav-separator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--line-strong);
+  padding: 0 2px;
+  user-select: none;
+}
+
 nav a:hover {
   background: var(--surface-hover);
   color: var(--text);
@@ -1153,6 +1162,10 @@ summary {
     flex: 1;
     text-align: center;
     padding: 8px 10px;
+  }
+
+  .nav-separator {
+    padding: 0 1px;
   }
 
   .feed-tools {
