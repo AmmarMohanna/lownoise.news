@@ -10,7 +10,7 @@ export const personalNewsBriefing: BriefingConfig = {
   interestProfile:
     "Track Lebanese security, economy, infrastructure, public safety, and major regional events. Ignore routine political statements unless they change concrete facts.",
   styleInstruction: "Use calm, balanced wording.",
-  publicFeedEnabled: false,
+  publicFeedEnabled: true,
   paused: false,
   language: "en",
   retentionDays: 15

@@ -44,6 +44,7 @@ describe("web helpers", () => {
 
     expect(english).toMatch(/\b\d{2}:\d{2}\b/);
     expect(arabic).toMatch(/\b\d{2}:\d{2}\b/);
+    expect(arabic).toMatch(/^حزيران \d{1,2}، \d{2}:\d{2}$/);
     expect(french).toMatch(/\b\d{2}:\d{2}\b/);
     expect(english).not.toMatch(/am|pm/i);
     expect(arabic).not.toMatch(/am|pm/i);

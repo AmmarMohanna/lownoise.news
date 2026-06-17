@@ -78,6 +78,8 @@ const adminAccountUpdateSchema = z.object({
   disabled: z.boolean().optional()
 });
 
+const FIXED_RETENTION_DAYS = 15;
+
 const briefingInputSchema = z.object({
   id: z.string().min(1).default(() => `briefing_${crypto.randomUUID()}`),
   slug: z.string().min(1).default("personal"),
@@ -85,10 +87,10 @@ const briefingInputSchema = z.object({
   stars: z.number().int().min(0).default(0),
   interestProfile: z.string().min(1),
   styleInstruction: z.string().optional(),
-  publicFeedEnabled: z.boolean().default(false),
+  publicFeedEnabled: z.boolean().default(true),
   paused: z.boolean().default(false),
   language: z.enum(["en", "ar", "fr"]).default("en"),
-  retentionDays: z.number().int().min(1).max(90).default(15)
+  retentionDays: z.number().int().min(1).max(90).default(FIXED_RETENTION_DAYS)
 });
 
 const sourceInputSchema = z.union([
@@ -343,7 +345,9 @@ export function createApp(options: AppOptions = {}) {
       ownerAccountId: account.id,
       ownerUsername: account.username,
       slug,
-      stars: existing?.stars ?? input.stars
+      stars: existing?.stars ?? input.stars,
+      publicFeedEnabled: true,
+      retentionDays: FIXED_RETENTION_DAYS
     });
     return c.json({ briefing });
   });
@@ -498,8 +502,6 @@ export function createApp(options: AppOptions = {}) {
     const resolved = await resolvePublicFeed(c);
     if (resolved instanceof Response) return resolved;
     const { repo, account, briefing } = resolved;
-    const includePrivate = await isAdminRequest(c);
-    if (!briefing.publicFeedEnabled && !includePrivate) return c.json({ error: "feed is private" }, 401);
     const voterId = await getVoterId(c);
     return c.json({
       briefing: publicBriefing(briefing),
@@ -512,8 +514,6 @@ export function createApp(options: AppOptions = {}) {
     const resolved = await resolvePublicFeed(c);
     if (resolved instanceof Response) return resolved;
     const { repo, account, briefing } = resolved;
-    const includePrivate = await isAdminRequest(c);
-    if (!briefing.publicFeedEnabled && !includePrivate) return c.json({ error: "feed is private" }, 401);
     return c.json({ items: searchBriefingItems(await repo.listFeedItems(account.id, briefing.slug, true), c.req.query("q") ?? "") });
   });
 
@@ -521,7 +521,6 @@ export function createApp(options: AppOptions = {}) {
     const resolved = await resolvePublicFeed(c);
     if (resolved instanceof Response) return resolved;
     const { repo, briefing } = resolved;
-    if (!briefing.publicFeedEnabled) return c.json({ error: "stars are only available on public feeds" }, 400);
 
     const input = feedStarInputSchema.parse(await c.req.json().catch(() => ({})));
     const voterId = await getOrCreateVoterId(c);
@@ -771,15 +770,6 @@ async function retryProcessingJobs(
   return retryableJobs.length;
 }
 
-async function isAdminRequest(c: Context<{ Bindings: Env; Variables: Variables }>): Promise<boolean> {
-  const secret = c.env.ADMIN_SESSION_SECRET ?? "";
-  if (c.req.header("x-lownoise-admin") === secret && secret) return true;
-  const claims = await verifySession(getCookie(c, "ln_session"), secret);
-  if (!claims) return false;
-  const account = await repoForContext(c).getAccountById(claims.sub);
-  return Boolean(account?.role === "admin" && !account.disabledAt);
-}
-
 function repoForContext(c: Context<{ Bindings: Env; Variables: Variables }>): Repository {
   return c.get("repo") ?? new D1Repository(c.env.DB);
 }
@@ -803,10 +793,10 @@ function publicBriefing(briefing: BriefingConfig): Omit<BriefingConfig, "interes
     slug: briefing.slug,
     title: briefing.title,
     stars: briefing.stars,
-    publicFeedEnabled: briefing.publicFeedEnabled,
+    publicFeedEnabled: true,
     paused: briefing.paused,
     language: briefing.language,
-    retentionDays: briefing.retentionDays
+    retentionDays: FIXED_RETENTION_DAYS
   };
 }
 

@@ -22,6 +22,8 @@ import type {
 
 type DbValue = string | number | null;
 
+const FIXED_RETENTION_DAYS = 15;
+
 interface AccountRow {
   id: string;
   email: string;
@@ -448,7 +450,7 @@ export class D1Repository implements Repository {
         input.publicFeedEnabled ? 1 : 0,
         input.paused ? 1 : 0,
         input.language,
-        input.retentionDays,
+        FIXED_RETENTION_DAYS,
         timestamp,
         timestamp
       )
@@ -723,10 +725,9 @@ export class D1Repository implements Repository {
       .run();
   }
 
-  async listFeedItems(ownerAccountId: string, slug: string, includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
+  async listFeedItems(ownerAccountId: string, slug: string, _includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
     const briefing = await this.getBriefingBySlug(ownerAccountId, slug);
     if (!briefing) return [];
-    if (!includePrivate && !briefing.publicFeedEnabled) return [];
     return this.getExistingItems(briefing.id, now);
   }
 
@@ -1019,6 +1020,7 @@ export class InMemoryRepository implements Repository {
     const account = this.accounts.get(input.ownerAccountId);
     this.briefings.set(input.id, {
       ...input,
+      retentionDays: FIXED_RETENTION_DAYS,
       ownerUsername: account?.username ?? input.ownerUsername
     });
     return { ...this.briefings.get(input.id)! };
@@ -1157,10 +1159,9 @@ export class InMemoryRepository implements Repository {
     this.itemsByBriefing.set(briefingId, scoped);
   }
 
-  async listFeedItems(ownerAccountId: string, slug: string, includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
+  async listFeedItems(ownerAccountId: string, slug: string, _includePrivate: boolean, now = new Date()): Promise<BriefingItem[]> {
     const briefing = await this.getBriefingBySlug(ownerAccountId, slug);
     if (!briefing) return [];
-    if (!includePrivate && !briefing.publicFeedEnabled) return [];
     return this.getExistingItems(briefing.id, now);
   }
 
@@ -1261,7 +1262,7 @@ function rowToBriefing(row: BriefingRow): BriefingConfig {
     publicFeedEnabled: row.public_feed_enabled === 1,
     paused: row.paused === 1,
     language: row.language === "ar" || row.language === "fr" ? row.language : "en",
-    retentionDays: row.retention_days
+    retentionDays: FIXED_RETENTION_DAYS
   };
 }
 

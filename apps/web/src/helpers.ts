@@ -1,5 +1,20 @@
 import type { BriefingConfig } from "@lownoise/core";
 
+const ARABIC_MONTHS = [
+  "كانون الثاني",
+  "شباط",
+  "آذار",
+  "نيسان",
+  "أيار",
+  "حزيران",
+  "تموز",
+  "آب",
+  "أيلول",
+  "تشرين الأول",
+  "تشرين الثاني",
+  "كانون الأول"
+];
+
 export function uniqueSlug(existing: BriefingConfig[], base: string): string {
   let slug = slugify(base);
   let suffix = 2;
@@ -31,8 +46,22 @@ export function publicFeedUrl(username: string, slug: string, origin = window.lo
   return new URL(`/${encodeURIComponent(username)}/${encodeURIComponent(slug)}/`, origin).toString();
 }
 
+export function formatArabicTimeParts(value: string): { month: string; day: string; time: string } {
+  const date = new Date(value);
+  const month = ARABIC_MONTHS[date.getMonth()] ?? "";
+  const day = String(date.getDate());
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return { month, day, time: `${hour}:${minute}` };
+}
+
 export function formatTime(value: string, language: "en" | "ar" | "fr"): string {
-  const locale = language === "ar" ? "ar-LB-u-nu-latn" : language === "fr" ? "fr-FR" : "en-GB";
+  if (language === "ar") {
+    const { month, day, time } = formatArabicTimeParts(value);
+    return `${month} ${day}، ${time}`;
+  }
+
+  const locale = language === "fr" ? "fr-FR" : "en-GB";
   return new Intl.DateTimeFormat(locale, {
     month: "short",
     day: "2-digit",

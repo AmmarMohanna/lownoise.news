@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Globe,
   Github,
+  HelpCircle,
   Languages,
   LogIn,
   LogOut,
@@ -54,7 +55,7 @@ import {
   type SourceIngestResult,
   type SourceRefreshResult
 } from "./api";
-import { deriveBriefingSlug, formatTime, publicFeedUrl, slugify } from "./helpers";
+import { deriveBriefingSlug, formatArabicTimeParts, formatTime, publicFeedUrl, slugify } from "./helpers";
 import type { AccountRecord, AccountWithStats, FeedPayload, HealthStatus, SessionStatus, TelegramSourceRecord } from "./types";
 import "./styles.css";
 
@@ -89,6 +90,7 @@ function AdminPage() {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const [feedSettingsOpen, setFeedSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   const [scopedDataReady, setScopedDataReady] = useState(false);
   const [autosaveState, setAutosaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -211,13 +213,9 @@ function AdminPage() {
     }
   }
 
-  async function copyPublicFeedUrl(nextBriefing: BriefingConfig) {
-    if (!nextBriefing.publicFeedEnabled) {
-      setStatus("enable public feed first");
-      return;
-    }
+  async function copyFeedUrl(nextBriefing: BriefingConfig) {
     await navigator.clipboard.writeText(publicFeedUrl(nextBriefing.ownerUsername, nextBriefing.slug));
-    setStatus("public feed url copied");
+    setStatus("feed url copied");
   }
 
   async function handleLogout() {
@@ -290,7 +288,8 @@ function AdminPage() {
           ownerUsername: nextAccount.username,
           title: input.title,
           interestProfile: input.interestProfile,
-          publicFeedEnabled: true
+          publicFeedEnabled: true,
+          retentionDays: 15
         },
         "setup saved",
         "setup-feed"
@@ -396,7 +395,6 @@ function AdminPage() {
                   <div className="feed-flags">
                     <span className="star-count"><Star size={13} aria-hidden /> {item.stars}</span>
                     <span className="pill">{languageLabel(item.language)}</span>
-                    <span className="pill">{item.publicFeedEnabled ? "public" : "private"}</span>
                     {item.paused ? <span className="pill">paused</span> : null}
                   </div>
                   <div className="row-actions">
@@ -412,22 +410,15 @@ function AdminPage() {
                     >
                       <Settings size={15} aria-hidden />
                     </button>
-                    {item.publicFeedEnabled ? (
-                      <a className="button-link icon-button" href={`/${item.ownerUsername}/${item.slug}/`} aria-label={`open ${item.title}`} title="open">
-                        <ExternalLink size={15} aria-hidden />
-                      </a>
-                    ) : (
-                      <button type="button" className="icon-button" aria-label={`${item.title} is private`} title="private" disabled>
-                        <ExternalLink size={15} aria-hidden />
-                      </button>
-                    )}
+                    <a className="button-link icon-button" href={`/${item.ownerUsername}/${item.slug}/`} aria-label={`open ${item.title}`} title="open">
+                      <ExternalLink size={15} aria-hidden />
+                    </a>
                     <button
                       type="button"
                       className="icon-button"
-                      aria-label={`copy public URL for ${item.title}`}
+                      aria-label={`copy URL for ${item.title}`}
                       title="copy url"
-                      disabled={!item.publicFeedEnabled}
-                      onClick={() => copyPublicFeedUrl(item)}
+                      onClick={() => copyFeedUrl(item)}
                     >
                       <Copy size={15} aria-hidden />
                     </button>
@@ -444,6 +435,15 @@ function AdminPage() {
                 <h2>sources</h2>
               </div>
               <div className="row-actions">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="feed help"
+                  title="help"
+                  onClick={() => setHelpOpen(true)}
+                >
+                  <HelpCircle size={15} aria-hidden />
+                </button>
                 <button
                   type="button"
                   className="icon-button"
@@ -466,22 +466,6 @@ function AdminPage() {
                     } finally {
                       setBusyAction(null);
                     }
-                  }}
-                >
-                  <RefreshCw size={15} aria-hidden />
-                </button>
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="retry processing"
-                  title="retry processing"
-                  disabled={busyAction === "retry-processing"}
-                  onClick={async () => {
-                    setBusyAction("retry-processing");
-                    const response = await retryProcessing(briefing.id);
-                    setHealth(response.health);
-                    setStatus(response.retried > 0 ? `retried ${response.retried} job(s)` : "no stale jobs to retry");
-                    setBusyAction(null);
                   }}
                 >
                   <RefreshCw size={15} aria-hidden />
@@ -520,7 +504,21 @@ function AdminPage() {
               </button>
             </div>
             {sourceStatus ? <p className="muted section-note">{sourceStatus}</p> : null}
-            <HealthSummary briefing={briefing} health={health} />
+            <HealthSummary
+              briefing={briefing}
+              health={health}
+              retryBusy={busyAction === "retry-processing"}
+              onRetryProcessing={async () => {
+                setBusyAction("retry-processing");
+                try {
+                  const response = await retryProcessing(briefing.id);
+                  setHealth(response.health);
+                  setStatus(response.retried > 0 ? `retried ${response.retried} job(s)` : "no stale jobs to retry");
+                } finally {
+                  setBusyAction(null);
+                }
+              }}
+            />
             <div className="source-list">
               {sources.length === 0 ? <p className="muted">add Telegram channel URLs</p> : null}
               {sources.map((source) => (
@@ -575,7 +573,7 @@ function AdminPage() {
           canDelete={briefings.length > 1}
           onClose={() => setFeedSettingsOpen(false)}
           onPatch={(patch) => patchSelectedBriefing(patch)}
-          onCopy={() => copyPublicFeedUrl(briefing)}
+          onCopy={() => copyFeedUrl(briefing)}
           onPauseToggle={async () => {
             try {
               await persistBriefing({ ...briefing, paused: !briefing.paused }, briefing.paused ? "feed resumed" : "feed paused", "pause-feed");
@@ -595,6 +593,7 @@ function AdminPage() {
           }}
         />
       ) : null}
+      {helpOpen ? <FeedHelpSheet onClose={() => setHelpOpen(false)} /> : null}
       {onboardingOpen && account && briefing ? (
         <FirstRunSetupSheet
           account={account}
@@ -873,45 +872,47 @@ function FeedSettingsSheet(props: {
             onChange={(event) => props.onPatch({ styleInstruction: event.target.value })}
           />
         </label>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={props.briefing.publicFeedEnabled}
-            onChange={(event) => props.onPatch({ publicFeedEnabled: event.target.checked })}
-          />
-          public feed
-        </label>
-        <details>
-          <summary>advanced</summary>
-          <label>
-            retention days
-            <input
-              type="number"
-              min={1}
-              max={90}
-              value={props.briefing.retentionDays}
-              onChange={(event) => props.onPatch({ retentionDays: Number(event.target.value) })}
-            />
-          </label>
-        </details>
       </div>
       <div className="sheet-actions">
         <button type="button" onClick={() => void props.onPauseToggle()}>
           {props.briefing.paused ? <Play size={15} aria-hidden /> : <Pause size={15} aria-hidden />}
           {props.briefing.paused ? "resume feed" : "pause feed"}
         </button>
-        {props.briefing.publicFeedEnabled ? (
-          <a className="button-link" href={`/${props.briefing.ownerUsername}/${props.briefing.slug}/`}>
-            <ExternalLink size={15} aria-hidden /> open feed
-          </a>
-        ) : null}
-        <button type="button" disabled={!props.briefing.publicFeedEnabled} onClick={() => void props.onCopy()}>
-          <Copy size={15} aria-hidden /> copy public url
+        <a className="button-link" href={`/${props.briefing.ownerUsername}/${props.briefing.slug}/`}>
+          <ExternalLink size={15} aria-hidden /> open feed
+        </a>
+        <button type="button" onClick={() => void props.onCopy()}>
+          <Copy size={15} aria-hidden /> copy url
         </button>
         <button type="button" className="danger-button" disabled={!props.canDelete} onClick={() => void props.onDelete()}>
           <Trash2 size={15} aria-hidden /> delete feed
         </button>
       </div>
+    </Sheet>
+  );
+}
+
+function FeedHelpSheet(props: { onClose: () => void }) {
+  return (
+    <Sheet title="feed help" closeLabel="close feed help" icon={<HelpCircle size={16} aria-hidden />} onClose={props.onClose}>
+      <ol className="help-steps">
+        <li>
+          <strong>name</strong>
+          <span>Choose a short feed name. The URL updates from that name.</span>
+        </li>
+        <li>
+          <strong>profile</strong>
+          <span>Write the exact kind of updates that should make it through.</span>
+        </li>
+        <li>
+          <strong>sources</strong>
+          <span>Add public Telegram channel URLs, then fetch latest.</span>
+        </li>
+        <li>
+          <strong>share</strong>
+          <span>Copy the feed URL when you want someone to read it.</span>
+        </li>
+      </ol>
     </Sheet>
   );
 }
@@ -982,15 +983,44 @@ function FirstRunSetupSheet(props: {
   );
 }
 
-function HealthSummary(props: { briefing: BriefingConfig; health: HealthStatus | null }) {
+function HealthSummary(props: {
+  briefing: BriefingConfig;
+  health: HealthStatus | null;
+  retryBusy: boolean;
+  onRetryProcessing: () => Promise<void>;
+}) {
+  const summary = getHealthSummaryParts(props.briefing, props.health);
+  const failedJobs = props.health?.processing.failed ?? 0;
   return (
     <details className="health-summary">
-      <summary>{formatHealthSummary(props.briefing, props.health)}</summary>
+      <summary className="health-summary-line" dir="ltr">
+        <span>{summary.feedState}</span>
+        <span aria-hidden>·</span>
+        <span>last update</span>
+        {props.health?.latestPublishedAt ? (
+          <Timestamp value={props.health.latestPublishedAt} language={props.briefing.language} />
+        ) : (
+          <span>{summary.latest}</span>
+        )}
+        <span aria-hidden>·</span>
+        <span>{summary.queueState}</span>
+      </summary>
       <div className="health">
         <StatusLine label="processing" value={`queued ${props.health?.processing.queued ?? 0} / failed ${props.health?.processing.failed ?? 0}`} />
         <StatusLine label="last source event" value={props.health?.lastTelegramEventAt ?? "none"} />
-        <StatusLine label="latest published" value={props.health?.latestPublishedAt ? formatTime(props.health.latestPublishedAt, props.briefing.language) : "none"} />
+        <StatusLine
+          label="latest published"
+          value={props.health?.latestPublishedAt ? <Timestamp value={props.health.latestPublishedAt} language={props.briefing.language} /> : "none"}
+          valueDir="ltr"
+        />
         <StatusLine label="status" value={props.briefing.paused ? "paused" : "live"} />
+        {failedJobs > 0 ? (
+          <div className="health-actions">
+            <button type="button" disabled={props.retryBusy} onClick={() => void props.onRetryProcessing()}>
+              <RefreshCw size={15} aria-hidden /> retry processing
+            </button>
+          </div>
+        ) : null}
       </div>
     </details>
   );
@@ -1325,7 +1355,7 @@ function FeedPage(props: { username: string; slug: string }) {
   const unreadItems = items.filter((item) => !readIds.has(item.id));
   const archivedReadItems = items.filter((item) => readIds.has(item.id));
   const language = payload?.briefing.language ?? "en";
-  const canStar = Boolean(payload?.briefing.publicFeedEnabled);
+  const canStar = Boolean(payload);
 
   return (
     <Shell title={payload?.briefing.title ?? "briefing"} feed={payload?.briefing} pageLanguage={language}>
@@ -1419,6 +1449,7 @@ function FeedItemRow(props: {
   onToggleExpanded: () => void;
   onToggleRead: () => void;
 }) {
+  const textDir = textDirection(props.language);
   return (
     <article className="news-item">
       <button type="button" className="read-button" aria-label={props.isRead ? `mark ${props.item.summary} unread` : `mark ${props.item.summary} read`} onClick={props.onToggleRead}>
@@ -1427,12 +1458,12 @@ function FeedItemRow(props: {
       <button type="button" className="expand" aria-expanded={props.isExpanded} aria-label={`show evidence for ${props.item.summary}`} onClick={props.onToggleExpanded}>
         {props.isExpanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />}
       </button>
-      <div className="news-copy" lang={props.language}>
-        <div className="news-meta">
-          <time dateTime={props.item.itemAt} dir="ltr">{formatTime(props.item.itemAt, props.language)}</time>
+      <div className="news-copy" lang={props.language} dir={textDir}>
+        <div className="news-meta" dir="ltr">
+          <Timestamp value={props.item.itemAt} language={props.language} />
           {props.item.mergedUpdateCount > 0 ? <span className="muted">updates {props.item.mergedUpdateCount + 1}</span> : null}
         </div>
-        <p className="news-summary"><bdi>{props.item.summary}</bdi></p>
+        <p className="news-summary" dir={textDir}><bdi dir={textDir}>{props.item.summary}</bdi></p>
         {props.isExpanded ? <EvidenceList item={props.item} language={props.language} /> : null}
       </div>
     </article>
@@ -1440,15 +1471,16 @@ function FeedItemRow(props: {
 }
 
 function EvidenceList(props: { item: BriefingItem; language: "en" | "ar" | "fr" }) {
+  const textDir = textDirection(props.language);
   return (
     <div className="evidence">
       {props.item.evidence.map((entry) => (
         <div key={entry.messageId} className="evidence-row">
-          <div className="evidence-head">
+          <div className="evidence-head" dir="ltr">
             <strong className="evidence-title"><bdi>{entry.sourceTitle}</bdi></strong>
-            <time dateTime={entry.postedAt} dir="ltr">{formatTime(entry.postedAt, props.language)}</time>
+            <Timestamp value={entry.postedAt} language={props.language} />
           </div>
-          <p className="evidence-text"><bdi>{entry.text}</bdi></p>
+          <p className="evidence-text" dir={textDir}><bdi dir={textDir}>{entry.text}</bdi></p>
           <div className="evidence-links">
             {entry.sourceUrl ? <a href={entry.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> original</a> : null}
             {entry.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> link</a>)}
@@ -1468,11 +1500,28 @@ function EvidenceList(props: { item: BriefingItem; language: "en" | "ar" | "fr" 
   );
 }
 
-function StatusLine(props: { label: string; value: string }) {
+function Timestamp(props: { value: string; language: "en" | "ar" | "fr" }) {
+  const label = formatTime(props.value, props.language);
+  if (props.language === "ar") {
+    const parts = formatArabicTimeParts(props.value);
+    return (
+      <time className="timestamp-ar" dateTime={props.value} lang="ar" dir="ltr" aria-label={label}>
+        <span dir="rtl">{parts.month}</span>
+        <span dir="ltr">{parts.day}، {parts.time}</span>
+      </time>
+    );
+  }
+  return <time dateTime={props.value} dir="ltr">{label}</time>;
+}
+
+function StatusLine(props: { label: string; value: React.ReactNode; valueDir?: "ltr" | "rtl" }) {
+  const valueDir = props.valueDir ?? "ltr";
   return (
     <p className="status-line">
       <span className="status-label">{props.label}</span>
-      <span className="status-value">{props.value}</span>
+      <span className="status-value" dir={valueDir}>
+        {typeof props.value === "string" ? <bdi dir={valueDir}>{props.value}</bdi> : props.value}
+      </span>
     </p>
   );
 }
@@ -1574,9 +1623,10 @@ function createBriefingDraft(existing: BriefingConfig[], account: AccountRecord)
     ownerUsername: account.username,
     title,
     slug: deriveBriefingSlug(existing, title),
-    publicFeedEnabled: false,
+    publicFeedEnabled: true,
     paused: false,
     language: "en",
+    retentionDays: 15,
     stars: 0
   };
 }
@@ -1624,13 +1674,21 @@ function formatSourceRefreshResults(results: SourceIngestResult[]): string {
   return `fetched ${totals.fetched}, queued ${totals.queued}`;
 }
 
-function formatHealthSummary(briefing: BriefingConfig, health: HealthStatus | null): string {
+function getHealthSummaryParts(briefing: BriefingConfig, health: HealthStatus | null): {
+  feedState: string;
+  latest: string;
+  queueState: string;
+} {
   const feedState = briefing.paused ? "paused" : "live";
   const latest = health?.latestPublishedAt ? formatTime(health.latestPublishedAt, briefing.language) : "no published items";
   const queued = health?.processing.queued ?? 0;
   const failed = health?.processing.failed ?? 0;
   const queueState = failed > 0 ? `failed ${failed}` : queued > 0 ? `queued ${queued}` : "queue clear";
-  return `${feedState} · last update ${latest} · ${queueState}`;
+  return { feedState, latest, queueState };
+}
+
+function textDirection(language: "en" | "ar" | "fr"): "ltr" | "rtl" {
+  return language === "ar" ? "rtl" : "ltr";
 }
 
 function formatAutosaveStatus(state: "idle" | "saving" | "saved" | "error", status: string): string {
@@ -1658,7 +1716,7 @@ async function wait(milliseconds: number): Promise<void> {
 
 function prepareBriefingForSave(briefing: BriefingConfig, existing: BriefingConfig[]): BriefingConfig {
   const nextSlug = deriveBriefingSlug(existing, briefing.title, briefing.id);
-  return { ...briefing, slug: slugify(nextSlug) };
+  return { ...briefing, slug: slugify(nextSlug), publicFeedEnabled: true, retentionDays: 15 };
 }
 
 function sortBriefings(briefings: BriefingConfig[]): BriefingConfig[] {

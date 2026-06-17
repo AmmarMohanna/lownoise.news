@@ -420,6 +420,26 @@ nav a:hover {
   align-items: center;
 }
 
+.help-steps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 22px;
+}
+
+.help-steps li {
+  padding-left: 4px;
+}
+
+.help-steps strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.help-steps span {
+  color: var(--muted);
+}
+
 .actions,
 .feed-tools,
 .evidence-links,
@@ -602,6 +622,25 @@ details {
   gap: 10px;
 }
 
+.health-summary-line {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.health-summary-line time,
+.news-meta time,
+.evidence-head time {
+  unicode-bidi: isolate;
+}
+
+.timestamp-ar {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 1ch;
+  direction: ltr;
+}
+
 summary {
   display: inline-flex;
   align-items: center;
@@ -632,6 +671,12 @@ summary {
 .status-value {
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+.health-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
 }
 
 .pill {
@@ -745,6 +790,11 @@ summary {
 .evidence-title,
 .evidence-text {
   text-align: left;
+}
+
+.news-summary[dir="rtl"],
+.evidence-text[dir="rtl"] {
+  text-align: right;
 }
 
 .evidence {

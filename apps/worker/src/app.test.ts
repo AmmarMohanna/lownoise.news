@@ -3,6 +3,7 @@ import { createApp } from "./app";
 import { hashPassword } from "./auth";
 import { processQueueMessage } from "./processor";
 import { InMemoryRepository } from "./repository";
+import type { BriefingItem } from "@lownoise/core";
 import type { Env, ProcessingJobMessage } from "./types";
 
 class FakeBucket {
@@ -364,6 +365,51 @@ describe("worker app accounts", () => {
 
     const oldRoute = await app.request("/api/feed/personal", {}, env());
     expect(oldRoute.status).toBe(404);
+  });
+
+  it("serves feed links without auth even when an old row has the removed private flag", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    await repo.upsertBriefing({ ...briefing!, publicFeedEnabled: false, retentionDays: 60 });
+
+    const item: BriefingItem = {
+      id: "item_old_private",
+      clusterId: "cluster_old_private",
+      summary: "Old private rows now serve through normal feed links.",
+      itemAt: "2026-06-16T08:00:00.000Z",
+      updatedAt: "2026-06-16T08:00:00.000Z",
+      expiresAt: "2026-07-01T08:00:00.000Z",
+      mergedUpdateCount: 1,
+      evidence: []
+    };
+    await repo.saveBriefingItems(briefing!.id, [item]);
+
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
+    expect(feedResponse.status).toBe(200);
+    const feed = (await feedResponse.json()) as {
+      briefing: { publicFeedEnabled: boolean; retentionDays: number };
+      items: Array<{ summary: string }>;
+    };
+    expect(feed.briefing.publicFeedEnabled).toBe(true);
+    expect(feed.briefing.retentionDays).toBe(15);
+    expect(feed.items[0].summary).toContain("Old private rows");
+
+    const searchResponse = await app.request("/api/feed/feed-owner/personal/search?q=private", {}, env());
+    expect(searchResponse.status).toBe(200);
+
+    const starResponse = await app.request(
+      "/api/feed/feed-owner/personal/star",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ starred: true })
+      },
+      env()
+    );
+    expect(starResponse.status).toBe(200);
   });
 
   it("redirects reserved old usernames after username changes", async () => {

@@ -95,6 +95,11 @@ test("email verification waits for an explicit user action", async ({ page }) =>
 });
 
 test("feed uses username-scoped URL while exposing evidence, refresh, and search", async ({ page }) => {
+  let sessionRequests = 0;
+  await page.route("**/api/auth/session", async (route) => {
+    sessionRequests += 1;
+    await route.abort();
+  });
   await page.route("**/api/feed/ammar-mohanna/personal", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -112,6 +117,7 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await page.goto("/ammar-mohanna/personal/");
 
   await expect(page.getByRole("button", { name: /refresh/i })).toBeVisible();
+  expect(sessionRequests).toBe(0);
   await expect(page.getByPlaceholder("search published briefing")).toBeVisible();
   await expect(page.locator(".news-item").filter({ hasText: item.summary }).first()).toBeVisible();
   await expect(page.getByText(/confidence|source count|breaking/i)).toHaveCount(0);
@@ -178,7 +184,7 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
         health: {
           lastTelegramEventAt: "2026-06-16T08:00:00.000Z",
           latestPublishedAt: "2026-06-16T08:05:00.000Z",
-          processing: { queued: 0, completed: 1, failed: 0 }
+          processing: { queued: 0, completed: 1, failed: 1 }
         }
       })
     });
@@ -205,9 +211,15 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
 
   await expect(page.getByRole("heading", { name: "admin" })).toBeVisible();
   await expect(page.getByLabel("interest profile")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "fetch latest" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "retry processing" })).toHaveCount(0);
+  await page.locator(".health-summary > summary").click();
+  await expect(page.getByRole("button", { name: "retry processing" })).toBeVisible();
   await page.getByRole("button", { name: "feed settings for Personal Briefing" }).click();
   await expect(page.getByRole("dialog", { name: "feed settings" })).toBeVisible();
   await expect(page.getByLabel("interest profile")).toBeVisible();
+  await expect(page.getByLabel("public feed")).toHaveCount(0);
+  await expect(page.getByText("retention days")).toHaveCount(0);
   await page.getByLabel("title").fill("Local Briefing");
   await expect.poll(() => savedBriefings.some((saved) => saved.title === "Local Briefing")).toBe(true);
   await page.getByRole("button", { name: "close feed settings" }).click();
@@ -222,6 +234,11 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
     "href",
     "/ammar-mohanna/local-briefing/"
   );
+  await expect(page.getByText("private", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "feed help" }).click();
+  await expect(page.getByRole("dialog", { name: "feed help" })).toBeVisible();
+  await expect(page.getByText("Copy the feed URL when you want someone to read it.")).toBeVisible();
+  await page.getByRole("button", { name: "close feed help" }).click();
   await expect(page.getByText("Beirut Local")).toBeVisible();
   await expect(page.getByRole("heading", { name: "accounts" })).toBeVisible();
   await page.getByRole("button", { name: "manage ammar-mohanna" }).click();

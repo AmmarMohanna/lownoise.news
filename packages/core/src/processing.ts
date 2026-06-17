@@ -109,7 +109,7 @@ function createBriefingItem(briefing: ProcessingInput["briefing"], cluster: Clus
       stars: 0,
       interestProfile: "",
       styleInstruction: undefined,
-      publicFeedEnabled: false,
+      publicFeedEnabled: true,
       paused: false,
       language: briefing.language,
       retentionDays: briefing.retentionDays
