@@ -889,6 +889,10 @@ export class D1Repository implements Repository {
         )
         .bind(briefingId, now.toISOString())
     );
+    if (!includeEvidence) {
+      return collapseBriefingItemsByStoredEventKey(rows.map((row) => ({ ...rowToBriefingItem(row), evidence: [] })));
+    }
+
     const evidenceByItemId =
       includeEvidence || collapseDuplicates ? await this.getEvidenceByItemIds(rows.map((row) => row.id)) : new Map<string, BriefingEvidence[]>();
     const items: BriefingItem[] = [];
@@ -2112,6 +2116,18 @@ function rowToBriefingItem(row: BriefingItemRow): Omit<BriefingItem, "evidence">
     expiresAt: row.expires_at,
     mergedUpdateCount: row.merged_update_count
   };
+}
+
+function collapseBriefingItemsByStoredEventKey(items: BriefingItem[]): BriefingItem[] {
+  const seen = new Set<string>();
+  const collapsed: BriefingItem[] = [];
+  for (const item of items) {
+    const key = item.eventKey ? `event:${item.eventKey}` : `item:${item.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    collapsed.push(item);
+  }
+  return collapsed;
 }
 
 function rowToEvidence(row: EvidenceRow): BriefingEvidence {
