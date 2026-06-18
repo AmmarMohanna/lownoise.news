@@ -298,9 +298,10 @@ nav a:hover {
 
 .brand-logo {
   display: block;
-  width: clamp(150px, 18vw, 210px);
-  height: auto;
-  max-height: 42px;
+  width: auto;
+  height: 42px;
+  max-width: 124px;
+  object-fit: contain;
 }
 
 :root[data-theme="dark"] .brand-logo {
