@@ -12,8 +12,6 @@ html {
   color: #191a1c;
   background: #f4f1eb;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-variant-caps: all-small-caps;
-  font-feature-settings: "c2sc", "smcp";
   font-size: 15px;
   line-height: 1.45;
   --page: #f4f1eb;

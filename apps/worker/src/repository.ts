@@ -150,6 +150,10 @@ interface EvidenceRow {
   media_json: string;
 }
 
+interface EvidenceWithItemRow extends EvidenceRow {
+  briefing_item_id: string;
+}
+
 interface SourceRunRow {
   id: string;
   source_id: string;
@@ -885,9 +889,11 @@ export class D1Repository implements Repository {
         )
         .bind(briefingId, now.toISOString())
     );
+    const evidenceByItemId =
+      includeEvidence || collapseDuplicates ? await this.getEvidenceByItemIds(rows.map((row) => row.id)) : new Map<string, BriefingEvidence[]>();
     const items: BriefingItem[] = [];
     for (const row of rows) {
-      items.push({ ...rowToBriefingItem(row), evidence: await this.getEvidence(row.id) });
+      items.push({ ...rowToBriefingItem(row), evidence: evidenceByItemId.get(row.id) ?? [] });
     }
     const briefing = collapseDuplicates ? await this.getBriefingById(briefingId) : null;
     const nextItems = briefing ? collapseDuplicateBriefingItems(items, briefing) : items;
@@ -1156,6 +1162,34 @@ export class D1Repository implements Repository {
         .bind(itemId)
     );
     return rows.map(rowToEvidence);
+  }
+
+  private async getEvidenceByItemIds(itemIds: string[]): Promise<Map<string, BriefingEvidence[]>> {
+    const evidenceByItemId = new Map<string, BriefingEvidence[]>();
+    const uniqueItemIds = Array.from(new Set(itemIds));
+    for (const itemId of uniqueItemIds) evidenceByItemId.set(itemId, []);
+
+    const batchSize = 100;
+    for (let index = 0; index < uniqueItemIds.length; index += batchSize) {
+      const batch = uniqueItemIds.slice(index, index + batchSize);
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => "?").join(", ");
+      const rows = await all<EvidenceWithItemRow>(
+        this.db
+          .prepare(
+            `SELECT briefing_item_id, raw_message_id, source_id, source_title, source_type, source_provider, source_kind,
+              source_url, posted_at, text, links_json, media_json
+            FROM briefing_item_evidence
+            WHERE briefing_item_id IN (${placeholders})
+            ORDER BY briefing_item_id ASC, posted_at ASC`
+          )
+          .bind(...batch)
+      );
+
+      for (const row of rows) evidenceByItemId.get(row.briefing_item_id)?.push(rowToEvidence(row));
+    }
+
+    return evidenceByItemId;
   }
 
   private async resolveDuplicateTarget(
