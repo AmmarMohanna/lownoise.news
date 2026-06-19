@@ -16,6 +16,9 @@ import {
 } from "@distilled/core";
 import type { ProcessingJobMessage, Repository } from "./types";
 
+const RECENT_MESSAGE_CONTEXT_LIMIT = 30;
+const EXISTING_ITEM_CONTEXT_LIMIT = 80;
+
 export async function processQueueMessage(
   repo: Repository,
   message: ProcessingJobMessage,
@@ -42,9 +45,9 @@ export async function processQueueMessage(
       return undefined;
     }
 
-    const existingItems = await repo.getExistingItems(briefing.id, now);
+    const existingItems = limitExistingItemsForProcessing(await repo.getExistingItems(briefing.id, now));
     const existingItemIds = new Set(existingItems.map((item) => item.id));
-    const recentMessages = await repo.listRecentRawMessages(briefing.id, now, 80);
+    const recentMessages = await repo.listRecentRawMessages(briefing.id, now, RECENT_MESSAGE_CONTEXT_LIMIT);
     const messages = uniqueMessagesById([rawMessage, ...recentMessages]);
     const importantMessageIds = await findImportantMessageIds(briefing, messages, rawMessage.id, reviewAdapter);
     const result = processMessages({
@@ -77,11 +80,10 @@ export async function processQueueMessage(
       }
     }
 
-    await repo.saveBriefingItems(
-      briefing.id,
-      result.publishedItems.filter((item) => Boolean(item.summary)),
-      now
+    const changedItems = result.publishedItems.filter((item) =>
+      Boolean(item.summary) && item.evidence.some((evidence) => evidence.messageId === rawMessage.id)
     );
+    await repo.saveBriefingItems(briefing.id, changedItems, now);
     await repo.completeProcessingJob(message.jobId, now);
     return result;
   } catch (error) {
@@ -103,6 +105,13 @@ function uniqueMessagesById<T extends { id: string }>(messages: T[]): T[] {
     unique.push(message);
   }
   return unique;
+}
+
+function limitExistingItemsForProcessing(items: BriefingItem[]): BriefingItem[] {
+  return items
+    .slice()
+    .sort((left, right) => right.itemAt.localeCompare(left.itemAt))
+    .slice(0, EXISTING_ITEM_CONTEXT_LIMIT);
 }
 
 async function findImportantMessageIds(
@@ -145,7 +154,7 @@ async function mergeReviewedEquivalentItems(
   if (!reviewAdapter) return sortItems(merged);
 
   let reviews = 0;
-  const maxReviews = 12;
+  const maxReviews = 2;
   for (let leftIndex = 0; leftIndex < merged.length; leftIndex += 1) {
     const left = merged[leftIndex];
     if (!left.evidence.some((entry) => entry.messageId === rawMessageId)) continue;

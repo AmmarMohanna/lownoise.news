@@ -10,7 +10,7 @@ import {
 import { estimateOpenAiCostUsd } from "./costs";
 import type { Env, Repository } from "./types";
 
-const AI_GATEWAY_REQUEST_TIMEOUT_MS = 20_000;
+const AI_GATEWAY_REQUEST_TIMEOUT_MS = 8_000;
 
 type LlmUsagePurpose = "summary" | "importance_review" | "event_review";
 type LlmUsageRecorder = (input: {

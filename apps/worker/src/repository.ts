@@ -913,17 +913,23 @@ export class D1Repository implements Repository {
   async saveBriefingItems(briefingId: string, items: BriefingItem[], now = new Date()): Promise<void> {
     const timestamp = now.toISOString();
     const briefing = await this.getBriefingById(briefingId);
-    for (const inputItem of collapseDuplicateBriefingItems(items, briefing ?? undefined)) {
+    const collapsedItems = collapseDuplicateBriefingItems(items, briefing ?? undefined);
+    const processedRawMessageIds = Array.from(new Set(
+      collapsedItems.flatMap((item) => item.evidence.map((entry) => entry.messageId))
+    ));
+    for (const inputItem of collapsedItems) {
       const item = await this.resolveDuplicateTarget(briefingId, inputItem, briefing ?? undefined, now);
       await this.writeBriefingItem(briefingId, item, timestamp);
     }
 
-    await this.db
-      .prepare("UPDATE raw_messages SET processed_at = ? WHERE id IN (SELECT raw_message_id FROM briefing_item_evidence)")
-      .bind(timestamp)
-      .run();
-
-    await this.repairDuplicateBriefingItems(briefingId, now);
+    for (const batch of chunk(processedRawMessageIds, 50)) {
+      if (batch.length === 0) continue;
+      const placeholders = batch.map(() => "?").join(", ");
+      await this.db
+        .prepare(`UPDATE raw_messages SET processed_at = ? WHERE id IN (${placeholders})`)
+        .bind(timestamp, ...batch)
+        .run();
+    }
   }
 
   async repairDuplicateBriefingItems(briefingId: string, now = new Date()): Promise<number> {
@@ -1903,7 +1909,7 @@ export class InMemoryRepository implements Repository {
     return collapseDuplicateBriefingItems(items, briefing ?? undefined);
   }
 
-  async saveBriefingItems(briefingId: string, items: BriefingItem[], now = new Date()): Promise<void> {
+  async saveBriefingItems(briefingId: string, items: BriefingItem[], _now = new Date()): Promise<void> {
     const briefing = await this.getBriefingById(briefingId);
     const scoped = this.itemsByBriefing.get(briefingId) ?? new Map<string, BriefingItem>();
     for (const item of collapseDuplicateBriefingItems(items, briefing ?? undefined)) {
@@ -1921,7 +1927,6 @@ export class InMemoryRepository implements Repository {
       }
     }
     this.itemsByBriefing.set(briefingId, scoped);
-    await this.repairDuplicateBriefingItems(briefingId, now);
   }
 
   async repairDuplicateBriefingItems(briefingId: string, now = new Date()): Promise<number> {
@@ -2335,6 +2340,14 @@ function parseJson<T>(value: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function stableHash(input: string): string {
