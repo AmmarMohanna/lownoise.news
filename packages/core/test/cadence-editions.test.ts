@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBriefingEdition, getDueBriefingWindow, personalNewsBriefing } from "../src";
+import { buildBriefingEdition, getDueBriefingWindow, personalNewsBriefing, synthesizeEditionNarrativeSummary } from "../src";
 import type { NormalizedMessage } from "../src";
 
 describe("briefing cadence", () => {
@@ -67,7 +67,7 @@ describe("briefing editions", () => {
 
     expect(edition.status).toBe("published");
     expect(edition.title).toBe("Hourly brief");
-    expect(edition.summary).toBe("1 update in this hourly brief.");
+    expect(edition.summary).toBe("This hour: Electricite du Liban announced two extra hours of power supply tonight [1].");
     expect(edition.sections).toHaveLength(1);
     expect(edition.sections[0].evidence[0].messageId).toBe(message.id);
   });
@@ -84,6 +84,29 @@ describe("briefing editions", () => {
     expect(edition.title).toBe("موجز الساعة");
     expect(edition.summary).toBe("لا توجد تحديثات موثوقة في موجز الساعة.");
     expect(edition.sections[0].title).toBe("لا تحديثات");
+  });
+
+  it("synthesizes multiple updates into one referenced paragraph", () => {
+    const summary = synthesizeEditionNarrativeSummary(
+      [
+        {
+          title: "Infrastructure",
+          summary: "Electricite du Liban announced two extra hours of power supply tonight.",
+          evidence: []
+        },
+        {
+          title: "Security",
+          summary: "The army reopened the coastal road after a security incident.",
+          evidence: []
+        }
+      ],
+      "hourly",
+      "en"
+    );
+
+    expect(summary).toBe(
+      "This hour: Electricite du Liban announced two extra hours of power supply tonight [1]. Also, the army reopened the coastal road after a security incident [2]."
+    );
   });
 
   it("publishes an explicit empty edition when nothing meaningful happened", () => {

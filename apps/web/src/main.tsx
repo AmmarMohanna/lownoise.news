@@ -27,7 +27,7 @@ import {
   X
 } from "lucide-react";
 import type { BriefingConfig, BriefingEdition, BriefingEditionSection, BriefingEvidence } from "@distilled/core";
-import { personalNewsBriefing } from "@distilled/core";
+import { personalNewsBriefing, synthesizeEditionNarrativeSummary } from "@distilled/core";
 import {
   addPublicTelegramSource,
   deleteBriefing,
@@ -1700,29 +1700,30 @@ function FeedPage(props: { username: string; slug: string }) {
     </span>
   ) : "briefing";
 
-  async function toggleEditionExpanded(edition: BriefingEdition) {
-    if (expanded.has(edition.id)) {
-      toggleSetValue(expanded, setExpanded, edition.id);
-      return;
-    }
+  function replaceEdition(detailed: BriefingEdition) {
+    setEditions((current) => current.map((entry) => (entry.id === detailed.id ? detailed : entry)));
+    setPayload((current) =>
+      current
+        ? {
+            ...current,
+            editions: current.editions.map((entry) => (entry.id === detailed.id ? detailed : entry))
+          }
+        : current
+    );
+  }
 
-    toggleSetValue(expanded, setExpanded, edition.id);
-    if (!payload || edition.sections.length > 0) return;
-
+  async function loadEditionDetail(edition: BriefingEdition): Promise<BriefingEdition | null> {
+    const currentEdition = editions.find((entry) => entry.id === edition.id) ?? edition;
+    if (currentEdition.sections.length > 0) return currentEdition;
+    if (!payload) return null;
     setEditionBusyIds((current) => new Set(current).add(edition.id));
     try {
       const detailed = await getFeedEdition(props.username, props.slug, edition.id);
-      setEditions((current) => current.map((entry) => (entry.id === edition.id ? detailed : entry)));
-      setPayload((current) =>
-        current
-          ? {
-              ...current,
-              editions: current.editions.map((entry) => (entry.id === edition.id ? detailed : entry))
-            }
-          : current
-      );
+      replaceEdition(detailed);
+      return detailed;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+      return null;
     } finally {
       setEditionBusyIds((current) => {
         const next = new Set(current);
@@ -1730,6 +1731,22 @@ function FeedPage(props: { username: string; slug: string }) {
         return next;
       });
     }
+  }
+
+  async function toggleEditionExpanded(edition: BriefingEdition) {
+    if (expanded.has(edition.id)) {
+      toggleSetValue(expanded, setExpanded, edition.id);
+      return;
+    }
+
+    toggleSetValue(expanded, setExpanded, edition.id);
+    await loadEditionDetail(edition);
+  }
+
+  async function openEditionReport(edition: BriefingEdition, sectionIndex: number) {
+    const detailed = await loadEditionDetail(edition);
+    if (!detailed || !detailed.sections[sectionIndex]) return;
+    setSelectedReport({ editionId: edition.id, sectionIndex });
   }
 
   return (
@@ -1805,7 +1822,7 @@ function FeedPage(props: { username: string; slug: string }) {
             isRead={false}
             onToggleExpanded={() => void toggleEditionExpanded(edition)}
             onToggleRead={() => toggleRead(readIds, setReadIds, edition.id, true)}
-            onOpenReport={(sectionIndex) => setSelectedReport({ editionId: edition.id, sectionIndex })}
+            onOpenReport={(sectionIndex) => void openEditionReport(edition, sectionIndex)}
           />
         ))}
         {hiddenUnreadCount > 0 ? (
@@ -1839,7 +1856,7 @@ function FeedPage(props: { username: string; slug: string }) {
                 isRead={true}
                 onToggleExpanded={() => void toggleEditionExpanded(edition)}
                 onToggleRead={() => toggleRead(readIds, setReadIds, edition.id, false)}
-                onOpenReport={(sectionIndex) => setSelectedReport({ editionId: edition.id, sectionIndex })}
+                onOpenReport={(sectionIndex) => void openEditionReport(edition, sectionIndex)}
               />
             ))}
           </div>
@@ -1861,6 +1878,7 @@ function FeedEditionRow(props: {
 }) {
   const textDir = textDirection(props.language);
   const evidenceCount = props.edition.sections.reduce((count, section) => count + section.evidence.length, 0);
+  const referenceCount = Math.max(props.edition.sections.length, highestReferenceNumber(props.edition.summary));
   return (
     <article className="news-item">
       <button
@@ -1881,7 +1899,13 @@ function FeedEditionRow(props: {
           <span className="muted">{cadenceMetaLabel(props.edition.cadence, props.language)}</span>
           {evidenceCount > 0 ? <span className="muted">{referenceLabel(evidenceCount, props.language)}</span> : null}
         </div>
-        <p className="news-summary" dir={textDir}><bdi dir={textDir}>{props.edition.summary}</bdi></p>
+        <ReferenceParagraph
+          className="news-summary"
+          text={props.edition.summary}
+          language={props.language}
+          referenceCount={referenceCount}
+          onOpenReference={props.onOpenReport}
+        />
         {props.isExpanded ? (
           <EditionSections
             edition={props.edition}
@@ -1905,46 +1929,71 @@ function EditionSections(props: {
   if (props.loading) return <p className="muted evidence-loading">loading briefing</p>;
   if (props.edition.sections.length === 0) return <p className="muted evidence-loading">no briefing detail available</p>;
   const referenceCount = props.edition.sections.reduce((count, section) => count + section.evidence.length, 0);
+  const narrative = editionNarrative(props.edition, props.language);
   return (
-    <div className="brief-list">
+    <div className="brief-synthesis">
       <div className="brief-list-head">
         <span>{briefLabel(props.language)}</span>
         {referenceCount > 0 ? <span className="muted">{referenceLabel(referenceCount, props.language)}</span> : null}
       </div>
-      {props.edition.sections.map((section, sectionIndex) => (
-        <article key={`${section.title}:${sectionIndex}`} className="brief-update">
-          <span className="brief-update-index" dir="ltr">{String(sectionIndex + 1).padStart(2, "0")}</span>
-          <div className="brief-update-copy">
-            <div className="brief-update-head">
-              <strong><bdi>{section.title}</bdi></strong>
-              {section.evidence.length > 0 ? <span className="muted">{referenceLabel(section.evidence.length, props.language)}</span> : null}
-            </div>
-            <p className="evidence-text" dir={textDir}><bdi dir={textDir}>{section.summary}</bdi></p>
-            <div className="brief-references">
-              <SourceChips section={section} />
-              {section.evidence.length > 0 ? (
-                <button type="button" title={reportLabel(props.language)} onClick={() => props.onOpenReport(sectionIndex)}>
-                  {reportLabel(props.language)}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </article>
-      ))}
+      <ReferenceParagraph
+        className="brief-synthesis-text"
+        text={narrative}
+        language={props.language}
+        referenceCount={props.edition.sections.length}
+        onOpenReference={props.onOpenReport}
+      />
+      <div className="brief-reference-strip" aria-label={referencesLabel(props.language)} dir={textDir}>
+        {props.edition.sections.map((section, sectionIndex) => (
+          <button
+            key={`${section.title}:${sectionIndex}`}
+            type="button"
+            className="brief-reference-button"
+            title={referenceButtonLabel(sectionIndex + 1, props.language)}
+            onClick={() => props.onOpenReport(sectionIndex)}
+          >
+            <span dir="ltr">[{sectionIndex + 1}]</span>
+            <bdi>{referencePreview(section)}</bdi>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
-function SourceChips(props: { section: BriefingEditionSection }) {
-  const sources = uniqueSourceTitles(props.section.evidence);
-  if (sources.length === 0) return null;
-  const visible = sources.slice(0, 3);
-  const hidden = sources.length - visible.length;
+function ReferenceParagraph(props: {
+  text: string;
+  language: "en" | "ar" | "fr";
+  referenceCount: number;
+  className: string;
+  onOpenReference: (sectionIndex: number) => void;
+}) {
+  const textDir = textDirection(props.language);
+  const parts = referenceTextParts(props.text);
+  if (parts.length === 0) {
+    return <p className={props.className} dir={textDir}><bdi dir={textDir}>{props.text}</bdi></p>;
+  }
+
   return (
-    <div className="source-chips">
-      {visible.map((source) => <span key={source} className="source-chip"><bdi>{source}</bdi></span>)}
-      {hidden > 0 ? <span className="source-chip">+{hidden}</span> : null}
-    </div>
+    <p className={props.className} dir={textDir}>
+      {parts.map((part, index) => {
+        if (part.kind === "text") return <bdi key={`${part.value}:${index}`} dir={textDir}>{part.value}</bdi>;
+        const canOpen = part.value >= 1 && part.value <= props.referenceCount;
+        return (
+          <button
+            key={`reference-${part.value}-${index}`}
+            type="button"
+            className="inline-reference"
+            disabled={!canOpen}
+            title={referenceButtonLabel(part.value, props.language)}
+            aria-label={referenceButtonLabel(part.value, props.language)}
+            onClick={() => props.onOpenReference(part.value - 1)}
+          >
+            [{part.value}]
+          </button>
+        );
+      })}
+    </p>
   );
 }
 
@@ -2265,10 +2314,59 @@ function uniqueSourceTitles(evidence: BriefingEvidence[]): string[] {
   return titles;
 }
 
+function editionNarrative(edition: BriefingEdition, language: "en" | "ar" | "fr"): string {
+  if (highestReferenceNumber(edition.summary) > 0) return edition.summary;
+  const sectionsWithSummaries = edition.sections.filter((section) => section.summary.trim());
+  if (sectionsWithSummaries.length === 0) return edition.summary;
+  return synthesizeEditionNarrativeSummary(sectionsWithSummaries, edition.cadence, language);
+}
+
+function referencePreview(section: BriefingEditionSection): string {
+  const sources = uniqueSourceTitles(section.evidence);
+  if (sources.length === 0) return section.title;
+  const visible = sources.slice(0, 2).join(", ");
+  const hidden = sources.length - 2;
+  return hidden > 0 ? `${visible} +${hidden}` : visible;
+}
+
+function highestReferenceNumber(text: string): number {
+  let highest = 0;
+  for (const match of text.matchAll(/\[(\d{1,3})\]/g)) {
+    highest = Math.max(highest, Number(match[1]));
+  }
+  return highest;
+}
+
+function referenceTextParts(text: string): Array<{ kind: "text"; value: string } | { kind: "reference"; value: number }> {
+  const parts: Array<{ kind: "text"; value: string } | { kind: "reference"; value: number }> = [];
+  const pattern = /\[(\d{1,3})\]/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    if (match.index === undefined) continue;
+    if (match.index > cursor) parts.push({ kind: "text", value: text.slice(cursor, match.index) });
+    parts.push({ kind: "reference", value: Number(match[1]) });
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) parts.push({ kind: "text", value: text.slice(cursor) });
+  return parts;
+}
+
 function briefLabel(language: "en" | "ar" | "fr"): string {
   if (language === "ar") return "الموجز";
   if (language === "fr") return "brief";
   return "brief";
+}
+
+function referencesLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "المراجع";
+  if (language === "fr") return "références";
+  return "references";
+}
+
+function referenceButtonLabel(referenceNumber: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return `فتح المرجع ${referenceNumber}`;
+  if (language === "fr") return `ouvrir la référence ${referenceNumber}`;
+  return `open reference ${referenceNumber}`;
 }
 
 function reportLabel(language: "en" | "ar" | "fr"): string {

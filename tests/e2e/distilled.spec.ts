@@ -205,10 +205,11 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await expect(page.getByText(/confidence|source count|breaking/i)).toHaveCount(0);
 
   await page.getByRole("button", { name: /show .*brief/i }).first().click();
-  await expect(page.getByText("Beirut Local")).toBeVisible();
-  await page.getByRole("button", { name: /^report$/i }).click();
-  await expect(page.getByRole("dialog", { name: "report" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /original/i })).toHaveAttribute("href", item.evidence[0].sourceUrl);
+  await page.getByRole("button", { name: /open reference 1/i }).first().click();
+  const reportDialog = page.getByRole("dialog", { name: "report" });
+  await expect(reportDialog).toBeVisible();
+  await expect(reportDialog.getByText("Beirut Local")).toBeVisible();
+  await expect(reportDialog.getByRole("link", { name: /original/i })).toHaveAttribute("href", item.evidence[0].sourceUrl);
   await page.getByRole("button", { name: "close report" }).click();
 
   await page.getByPlaceholder("search published briefing").fill("power supply");

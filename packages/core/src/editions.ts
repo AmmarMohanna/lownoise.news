@@ -29,7 +29,9 @@ export function buildBriefingEdition(input: BuildBriefingEditionInput): Briefing
     : [emptySection(input.briefing.briefingCadence, input.briefing.language)];
   const status = items.length > 0 ? "published" : "empty";
   const title = editionTitle(input.briefing.briefingCadence, input.briefing.language);
-  const summary = editionSummary(items.length, input.briefing.briefingCadence, input.briefing.language);
+  const summary = items.length > 0
+    ? synthesizeEditionNarrativeSummary(sections, input.briefing.briefingCadence, input.briefing.language)
+    : editionSummary(0, input.briefing.briefingCadence, input.briefing.language);
   const timestamp = input.now.toISOString();
 
   return {
@@ -71,6 +73,49 @@ function emptySection(
     summary: editionSummary(0, cadence, language),
     evidence: []
   };
+}
+
+export function synthesizeEditionNarrativeSummary(
+  sections: BriefingEditionSection[],
+  cadence: BriefingConfig["briefingCadence"],
+  language: BriefingConfig["language"]
+): string {
+  const referencedUpdates = sections
+    .map((section, index) => referenceSentence(section.summary, index + 1))
+    .filter(Boolean);
+
+  if (referencedUpdates.length === 0) return editionSummary(0, cadence, language);
+
+  if (language === "ar") {
+    const [first, ...rest] = referencedUpdates;
+    return [
+      `${arabicNarrativeIntro(cadence)} ${first}.`,
+      ...rest.map((update, index) => `${arabicNarrativeConnector(index)} ${update}.`)
+    ].join(" ");
+  }
+
+  if (language === "fr") {
+    const [first, ...rest] = referencedUpdates;
+    return [
+      `${frenchNarrativeIntro(cadence)} ${first}.`,
+      ...rest.map((update, index) => `${frenchNarrativeConnector(index)} ${update}.`)
+    ].join(" ");
+  }
+
+  const [first, ...rest] = referencedUpdates;
+  return [
+    `${englishNarrativeIntro(cadence)} ${first}.`,
+    ...rest.map((update, index) => `${englishNarrativeConnector(index)} ${lowerLeadingEnglishArticle(update)}.`)
+  ].join(" ");
+}
+
+function referenceSentence(summary: string, referenceNumber: number): string {
+  const cleaned = summary
+    .replace(/\s*\[\d+\]\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!؟?]+$/u, "");
+  return cleaned ? `${cleaned} [${referenceNumber}]` : "";
 }
 
 function sectionTitle(item: BriefingItem, language: BriefingConfig["language"]): string {
@@ -144,6 +189,43 @@ function editionSummary(
   }
   if (itemCount === 0) return `No verified updates in this ${label} brief.`;
   return `${itemCount} update${itemCount === 1 ? "" : "s"} in this ${label} brief.`;
+}
+
+function englishNarrativeIntro(cadence: BriefingConfig["briefingCadence"]): string {
+  if (cadence === "hourly") return "This hour:";
+  return `This ${cadenceLabel(cadence)} brief:`;
+}
+
+function englishNarrativeConnector(index: number): string {
+  if (index === 0) return "Also,";
+  if (index === 1) return "Separately,";
+  return "It also notes";
+}
+
+function lowerLeadingEnglishArticle(update: string): string {
+  return update.replace(/^(The|A|An)\s/u, (article) => article.toLowerCase());
+}
+
+function arabicNarrativeIntro(cadence: BriefingConfig["briefingCadence"]): string {
+  if (cadence === "hourly") return "في هذه الساعة:";
+  return `في ${arabicCadencePhrase(cadence)}:`;
+}
+
+function arabicNarrativeConnector(index: number): string {
+  if (index === 0) return "كما ورد";
+  if (index === 1) return "وبشكل منفصل،";
+  return "ويشير الموجز أيضاً إلى";
+}
+
+function frenchNarrativeIntro(cadence: BriefingConfig["briefingCadence"]): string {
+  if (cadence === "hourly") return "Cette heure-ci :";
+  return `Dans ce brief ${frenchCadenceAdjective(cadence)} :`;
+}
+
+function frenchNarrativeConnector(index: number): string {
+  if (index === 0) return "Le brief note aussi";
+  if (index === 1) return "Séparément,";
+  return "Il relève également";
 }
 
 function localizedNoUpdateTitle(language: BriefingConfig["language"]): string {

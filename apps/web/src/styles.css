@@ -1009,9 +1009,9 @@ summary {
   text-align: right;
 }
 
-.brief-list {
+.brief-synthesis {
   display: grid;
-  gap: 0;
+  gap: 10px;
   margin-top: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
@@ -1027,33 +1027,7 @@ summary {
   color: var(--muted);
 }
 
-.brief-update {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 12px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
-}
-
-.brief-list-head + .brief-update {
-  border-top-style: dashed;
-}
-
-.brief-update-index {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.7;
-}
-
-.brief-update-copy {
-  display: grid;
-  gap: 7px;
-  min-width: 0;
-}
-
-.brief-update-head,
-.brief-references,
-.source-chips,
+.brief-reference-strip,
 .report-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1062,29 +1036,53 @@ summary {
   min-width: 0;
 }
 
-.brief-update-head {
-  justify-content: space-between;
+.brief-synthesis-text {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
 }
 
-.brief-references {
-  justify-content: space-between;
-}
-
-.source-chips {
-  flex: 1;
-}
-
-.source-chip {
+.inline-reference {
   display: inline-flex;
-  max-width: 180px;
-  padding: 3px 7px;
+  min-height: auto;
+  margin: 0 2px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.2;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  vertical-align: baseline;
+}
+
+.inline-reference:hover,
+.inline-reference:focus-visible {
+  background: var(--surface-hover);
+}
+
+.brief-reference-strip {
+  padding-top: 2px;
+}
+
+.brief-reference-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  min-height: 28px;
+  padding: 4px 7px;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 6px;
   color: var(--muted);
   font-size: 12px;
 }
 
-.source-chip bdi {
+.brief-reference-button bdi {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
