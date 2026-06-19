@@ -26,7 +26,7 @@ import {
   User,
   X
 } from "lucide-react";
-import type { BriefingConfig, BriefingEdition } from "@distilled/core";
+import type { BriefingConfig, BriefingEdition, BriefingEditionSection, BriefingEvidence } from "@distilled/core";
 import { personalNewsBriefing } from "@distilled/core";
 import {
   addPublicTelegramSource,
@@ -63,6 +63,11 @@ import type { AccountRecord, AccountWithStats, FeedPayload, HealthStatus, Public
 import "./styles.css";
 
 const FEED_BATCH_SIZE = 20;
+
+type ReportSelection = {
+  editionId: string;
+  sectionIndex: number;
+};
 
 declare global {
   interface Window {
@@ -1625,6 +1630,7 @@ function FeedPage(props: { username: string; slug: string }) {
   const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const [visibleUnreadCount, setVisibleUnreadCount] = useState(FEED_BATCH_SIZE);
   const [clock, setClock] = useState(Date.now());
+  const [selectedReport, setSelectedReport] = useState<ReportSelection | null>(null);
 
   async function refresh() {
     setError("");
@@ -1634,6 +1640,7 @@ function FeedPage(props: { username: string; slug: string }) {
     setExpanded(new Set());
     setEditionBusyIds(new Set());
     setVisibleUnreadCount(FEED_BATCH_SIZE);
+    setSelectedReport(null);
   }
 
   useEffect(() => {
@@ -1682,8 +1689,10 @@ function FeedPage(props: { username: string; slug: string }) {
   const language = payload?.briefing.language ?? "en";
   const canStar = Boolean(payload);
   const nextBriefingLabel = payload?.briefing.nextBriefingAt
-    ? formatCountdown(payload.briefing.nextBriefingAt, clock)
+    ? formatCountdown(payload.briefing.nextBriefingAt, clock, language)
     : "";
+  const reportEdition = selectedReport ? editions.find((edition) => edition.id === selectedReport.editionId) : undefined;
+  const reportSection = reportEdition && selectedReport ? reportEdition.sections[selectedReport.sectionIndex] : undefined;
   const feedTitle = payload ? (
     <span className="feed-page-title">
       <span className={`status-dot ${payload.briefing.paused ? "paused" : "live"}`} aria-hidden />
@@ -1775,8 +1784,16 @@ function FeedPage(props: { username: string; slug: string }) {
         </div>
       </div>
       {exploreOpen ? <ExploreFeedsSheet currentFeed={payload?.briefing} onClose={() => setExploreOpen(false)} /> : null}
+      {reportEdition && reportSection ? (
+        <ReportSheet
+          edition={reportEdition}
+          section={reportSection}
+          language={language}
+          onClose={() => setSelectedReport(null)}
+        />
+      ) : null}
       {error ? <FeedNotice message={error} /> : null}
-      {nextBriefingLabel ? <p className="muted next-briefing">next {payload?.briefing.briefingCadence} briefing {nextBriefingLabel}</p> : null}
+      {nextBriefingLabel && payload ? <p className="muted next-briefing">{nextBriefingText(payload.briefing.briefingCadence, nextBriefingLabel, language)}</p> : null}
       <div className="news-line">
         {visibleUnreadEditions.map((edition) => (
           <FeedEditionRow
@@ -1788,6 +1805,7 @@ function FeedPage(props: { username: string; slug: string }) {
             isRead={false}
             onToggleExpanded={() => void toggleEditionExpanded(edition)}
             onToggleRead={() => toggleRead(readIds, setReadIds, edition.id, true)}
+            onOpenReport={(sectionIndex) => setSelectedReport({ editionId: edition.id, sectionIndex })}
           />
         ))}
         {hiddenUnreadCount > 0 ? (
@@ -1821,6 +1839,7 @@ function FeedPage(props: { username: string; slug: string }) {
                 isRead={true}
                 onToggleExpanded={() => void toggleEditionExpanded(edition)}
                 onToggleRead={() => toggleRead(readIds, setReadIds, edition.id, false)}
+                onOpenReport={(sectionIndex) => setSelectedReport({ editionId: edition.id, sectionIndex })}
               />
             ))}
           </div>
@@ -1838,6 +1857,7 @@ function FeedEditionRow(props: {
   isRead: boolean;
   onToggleExpanded: () => void;
   onToggleRead: () => void;
+  onOpenReport: (sectionIndex: number) => void;
 }) {
   const textDir = textDirection(props.language);
   const evidenceCount = props.edition.sections.reduce((count, section) => count + section.evidence.length, 0);
@@ -1858,52 +1878,137 @@ function FeedEditionRow(props: {
       <div className="news-copy" lang={props.language} dir={textDir}>
         <div className="news-meta" dir="ltr">
           <Timestamp value={props.edition.publishedAt} language={props.language} />
-          <span className="muted">{props.edition.cadence}</span>
-          {evidenceCount > 0 ? <span className="muted">evidence {evidenceCount}</span> : null}
+          <span className="muted">{cadenceMetaLabel(props.edition.cadence, props.language)}</span>
+          {evidenceCount > 0 ? <span className="muted">{referenceLabel(evidenceCount, props.language)}</span> : null}
         </div>
         <p className="news-summary" dir={textDir}><bdi dir={textDir}>{props.edition.summary}</bdi></p>
-        {props.isExpanded ? <EditionSections edition={props.edition} language={props.language} loading={props.isLoading} /> : null}
+        {props.isExpanded ? (
+          <EditionSections
+            edition={props.edition}
+            language={props.language}
+            loading={props.isLoading}
+            onOpenReport={props.onOpenReport}
+          />
+        ) : null}
       </div>
     </article>
   );
 }
 
-function EditionSections(props: { edition: BriefingEdition; language: "en" | "ar" | "fr"; loading: boolean }) {
+function EditionSections(props: {
+  edition: BriefingEdition;
+  language: "en" | "ar" | "fr";
+  loading: boolean;
+  onOpenReport: (sectionIndex: number) => void;
+}) {
   const textDir = textDirection(props.language);
   if (props.loading) return <p className="muted evidence-loading">loading briefing</p>;
   if (props.edition.sections.length === 0) return <p className="muted evidence-loading">no briefing detail available</p>;
+  const referenceCount = props.edition.sections.reduce((count, section) => count + section.evidence.length, 0);
   return (
-    <div className="evidence">
+    <div className="brief-list">
+      <div className="brief-list-head">
+        <span>{briefLabel(props.language)}</span>
+        {referenceCount > 0 ? <span className="muted">{referenceLabel(referenceCount, props.language)}</span> : null}
+      </div>
       {props.edition.sections.map((section, sectionIndex) => (
-        <div key={`${section.title}:${sectionIndex}`} className="edition-section">
-          <strong><bdi>{section.title}</bdi></strong>
-          <p className="evidence-text" dir={textDir}><bdi dir={textDir}>{section.summary}</bdi></p>
-          {section.evidence.map((entry) => (
-            <div key={`${section.title}:${entry.messageId}:${entry.postedAt}`} className="evidence-row">
-              <div className="evidence-head" dir="ltr">
-                <strong className="evidence-title"><bdi>{entry.sourceTitle}</bdi></strong>
-                <Timestamp value={entry.postedAt} language={props.language} />
-              </div>
-              <p className="evidence-text" dir={textDir}><bdi dir={textDir}>{entry.text}</bdi></p>
-              <div className="evidence-links">
-                {entry.sourceUrl ? <a href={entry.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> original</a> : null}
-                {entry.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> link</a>)}
-                {entry.media.map((media, index) =>
-                  media.url ? (
-                    <a key={`${media.url}-${index}`} href={media.url} target="_blank" rel="noreferrer">
-                      <ExternalLink size={14} aria-hidden /> {media.label ?? media.type}
-                    </a>
-                  ) : (
-                    <span key={`${media.fileId}-${index}`} className="muted">{media.label ?? media.type}</span>
-                  )
-                )}
-              </div>
+        <article key={`${section.title}:${sectionIndex}`} className="brief-update">
+          <span className="brief-update-index" dir="ltr">{String(sectionIndex + 1).padStart(2, "0")}</span>
+          <div className="brief-update-copy">
+            <div className="brief-update-head">
+              <strong><bdi>{section.title}</bdi></strong>
+              {section.evidence.length > 0 ? <span className="muted">{referenceLabel(section.evidence.length, props.language)}</span> : null}
             </div>
-          ))}
-          {section.evidence.length === 0 ? <p className="muted evidence-loading">no evidence for this section</p> : null}
-        </div>
+            <p className="evidence-text" dir={textDir}><bdi dir={textDir}>{section.summary}</bdi></p>
+            <div className="brief-references">
+              <SourceChips section={section} />
+              {section.evidence.length > 0 ? (
+                <button type="button" title={reportLabel(props.language)} onClick={() => props.onOpenReport(sectionIndex)}>
+                  {reportLabel(props.language)}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </article>
       ))}
     </div>
+  );
+}
+
+function SourceChips(props: { section: BriefingEditionSection }) {
+  const sources = uniqueSourceTitles(props.section.evidence);
+  if (sources.length === 0) return null;
+  const visible = sources.slice(0, 3);
+  const hidden = sources.length - visible.length;
+  return (
+    <div className="source-chips">
+      {visible.map((source) => <span key={source} className="source-chip"><bdi>{source}</bdi></span>)}
+      {hidden > 0 ? <span className="source-chip">+{hidden}</span> : null}
+    </div>
+  );
+}
+
+function ReportSheet(props: {
+  edition: BriefingEdition;
+  section: BriefingEditionSection;
+  language: "en" | "ar" | "fr";
+  onClose: () => void;
+}) {
+  const textDir = textDirection(props.language);
+  return (
+    <Sheet
+      title={reportLabel(props.language)}
+      closeLabel={closeReportLabel(props.language)}
+      icon={<ExternalLink size={17} aria-hidden />}
+      onClose={props.onClose}
+      wide
+    >
+      <div className="report-module" lang={props.language} dir={textDir}>
+        <div className="report-meta" dir="ltr">
+          <Timestamp value={props.edition.publishedAt} language={props.language} />
+          <span>{referenceLabel(props.section.evidence.length, props.language)}</span>
+        </div>
+        <div className="report-summary-block">
+          <strong><bdi>{props.section.title}</bdi></strong>
+          <p className="report-summary" dir={textDir}><bdi dir={textDir}>{props.section.summary}</bdi></p>
+        </div>
+        <div className="report-reference-list">
+          {props.section.evidence.map((entry, index) => (
+            <ReportEvidenceRow key={`${entry.messageId}:${entry.postedAt}:${index}`} entry={entry} language={props.language} />
+          ))}
+          {props.section.evidence.length === 0 ? <p className="muted">{noReferencesLabel(props.language)}</p> : null}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function ReportEvidenceRow(props: { entry: BriefingEvidence; language: "en" | "ar" | "fr" }) {
+  const textDir = textDirection(props.language);
+  return (
+    <article className="report-reference">
+      <div className="evidence-head" dir="ltr">
+        <strong className="evidence-title"><bdi>{props.entry.sourceTitle}</bdi></strong>
+        <Timestamp value={props.entry.postedAt} language={props.language} />
+      </div>
+      <div className="evidence-links">
+        {props.entry.sourceUrl ? <a href={props.entry.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> {originalPostLabel(props.language)}</a> : null}
+        {props.entry.links.map((link) => <a key={link} href={link} target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden /> {linkLabel(props.language)}</a>)}
+        {props.entry.media.map((media, index) =>
+          media.url ? (
+            <a key={`${media.url}-${index}`} href={media.url} target="_blank" rel="noreferrer">
+              <ExternalLink size={14} aria-hidden /> {media.label ?? media.type}
+            </a>
+          ) : (
+            <span key={`${media.fileId}-${index}`} className="muted">{media.label ?? media.type}</span>
+          )
+        )}
+      </div>
+      <details className="report-excerpt">
+        <summary>{sourceTextLabel(props.language)}</summary>
+        <p className="evidence-text" dir={textDir}><bdi dir={textDir}>{props.entry.text}</bdi></p>
+      </details>
+    </article>
   );
 }
 
@@ -2120,17 +2225,118 @@ function formatAutosaveStatus(state: "idle" | "saving" | "saved" | "error", stat
   return status || "ready";
 }
 
-function formatCountdown(isoDate: string, nowMs: number): string {
+function formatCountdown(isoDate: string, nowMs: number, language: "en" | "ar" | "fr" = "en"): string {
   const diffMs = new Date(isoDate).getTime() - nowMs;
   if (!Number.isFinite(diffMs)) return "";
-  if (diffMs <= 0) return "is due";
+  if (diffMs <= 0) {
+    if (language === "ar") return "مستحق الآن";
+    if (language === "fr") return "maintenant";
+    return "is due";
+  }
   const minutes = Math.ceil(diffMs / 60_000);
-  if (minutes < 60) return `in ${minutes} min`;
+  if (minutes < 60) {
+    if (language === "ar") return `بعد ${minutes} د`;
+    if (language === "fr") return `dans ${minutes} min`;
+    return `in ${minutes} min`;
+  }
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
-  if (hours < 24) return remainder === 0 ? `in ${hours}h` : `in ${hours}h ${remainder}m`;
+  if (hours < 24) {
+    if (language === "ar") return remainder === 0 ? `بعد ${hours} س` : `بعد ${hours} س ${remainder} د`;
+    if (language === "fr") return remainder === 0 ? `dans ${hours}h` : `dans ${hours}h ${remainder}m`;
+    return remainder === 0 ? `in ${hours}h` : `in ${hours}h ${remainder}m`;
+  }
   const days = Math.floor(hours / 24);
+  if (language === "ar") return `بعد ${days} يوم`;
+  if (language === "fr") return `dans ${days}j`;
   return `in ${days}d`;
+}
+
+function uniqueSourceTitles(evidence: BriefingEvidence[]): string[] {
+  const titles: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of evidence) {
+    const title = entry.sourceTitle.trim();
+    const key = title.toLowerCase();
+    if (!title || seen.has(key)) continue;
+    seen.add(key);
+    titles.push(title);
+  }
+  return titles;
+}
+
+function briefLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "الموجز";
+  if (language === "fr") return "brief";
+  return "brief";
+}
+
+function reportLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "تقرير";
+  if (language === "fr") return "rapport";
+  return "report";
+}
+
+function closeReportLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "إغلاق التقرير";
+  if (language === "fr") return "fermer le rapport";
+  return "close report";
+}
+
+function referenceLabel(count: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return count === 1 ? "مرجع واحد" : `${count} مراجع`;
+  if (language === "fr") return `${count} référence${count === 1 ? "" : "s"}`;
+  return `${count} reference${count === 1 ? "" : "s"}`;
+}
+
+function cadenceMetaLabel(cadence: BriefingConfig["briefingCadence"], language: "en" | "ar" | "fr"): string {
+  if (language === "ar") {
+    if (cadence === "daily") return "يومي";
+    if (cadence === "weekly") return "أسبوعي";
+    if (cadence === "monthly") return "شهري";
+    return "كل ساعة";
+  }
+  if (language === "fr") {
+    if (cadence === "daily") return "quotidien";
+    if (cadence === "weekly") return "hebdomadaire";
+    if (cadence === "monthly") return "mensuel";
+    return "horaire";
+  }
+  return cadence;
+}
+
+function nextBriefingText(
+  cadence: BriefingConfig["briefingCadence"],
+  countdown: string,
+  language: "en" | "ar" | "fr"
+): string {
+  if (language === "ar") return `الموجز التالي ${countdown}`;
+  if (language === "fr") return `prochain brief ${cadenceMetaLabel(cadence, language)} ${countdown}`;
+  return `next ${cadence} brief ${countdown}`;
+}
+
+function noReferencesLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "لا توجد مراجع لهذا التحديث.";
+  if (language === "fr") return "Aucune référence pour cette mise à jour.";
+  return "No references for this update.";
+}
+
+function originalPostLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "المنشور الأصلي";
+  if (language === "fr") return "publication originale";
+  return "original post";
+}
+
+function linkLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "رابط";
+  if (language === "fr") return "lien";
+  return "link";
+}
+
+function sourceTextLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "نص المصدر";
+  if (language === "fr") return "texte source";
+  return "source text";
 }
 
 function onboardingStorageKey(accountId: string): string {

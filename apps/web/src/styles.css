@@ -992,7 +992,8 @@ summary {
 }
 
 .news-summary,
-.evidence-row p {
+.report-summary,
+.report-excerpt p {
   min-width: 0;
   overflow-wrap: anywhere;
   text-align: left;
@@ -1008,12 +1009,85 @@ summary {
   text-align: right;
 }
 
-.evidence {
+.brief-list {
   display: grid;
-  gap: 12px;
+  gap: 0;
   margin-top: 6px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
+}
+
+.brief-list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  color: var(--muted);
+}
+
+.brief-update {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.brief-list-head + .brief-update {
+  border-top-style: dashed;
+}
+
+.brief-update-index {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.brief-update-copy {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.brief-update-head,
+.brief-references,
+.source-chips,
+.report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.brief-update-head {
+  justify-content: space-between;
+}
+
+.brief-references {
+  justify-content: space-between;
+}
+
+.source-chips {
+  flex: 1;
+}
+
+.source-chip {
+  display: inline-flex;
+  max-width: 180px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.source-chip bdi {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .evidence-loading {
@@ -1022,9 +1096,32 @@ summary {
   border-top: 1px solid var(--line);
 }
 
-.evidence-row {
+.report-module,
+.report-summary-block,
+.report-reference-list,
+.report-reference {
   display: grid;
-  gap: 6px;
+  gap: 10px;
+  min-width: 0;
+}
+
+.report-summary-block {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.report-meta {
+  color: var(--muted);
+}
+
+.report-summary {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.report-reference {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .evidence-head {
@@ -1032,6 +1129,19 @@ summary {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+
+.report-excerpt {
+  display: grid;
+  gap: 8px;
+}
+
+.report-excerpt summary {
+  color: var(--muted);
+}
+
+.report-excerpt p {
+  margin: 0;
 }
 
 .evidence-links a {

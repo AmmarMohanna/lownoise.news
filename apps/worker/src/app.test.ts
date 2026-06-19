@@ -369,7 +369,7 @@ describe("worker app accounts", () => {
     const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
     expect(feedResponse.status).toBe(200);
     const feed = (await feedResponse.json()) as { editions: Array<{ id: string; summary: string; sections: unknown[] }> };
-    expect(feed.editions[0].summary).toContain("1 meaningful update");
+    expect(feed.editions[0].summary).toContain("1 update in this hourly brief");
     expect(feed.editions[0].sections).toEqual([]);
 
     const editionResponse = await app.request(`/api/feed/feed-owner/personal/editions/${feed.editions[0].id}`, {}, env());
@@ -829,7 +829,7 @@ describe("worker app accounts", () => {
     expect(feedResponse.status).toBe(200);
     const feed = (await feedResponse.json()) as { briefing: { briefingCadence?: string }; editions: Array<{ id: string; summary: string }> };
     expect(feed.briefing.briefingCadence).toBe("hourly");
-    expect(feed.editions[0].summary).toContain("1 meaningful update");
+    expect(feed.editions[0].summary).toContain("1 update in this hourly brief");
 
     const editionResponse = await app.request(
       `/api/feed/feed-owner/personal/editions/${encodeURIComponent(feed.editions[0].id)}`,

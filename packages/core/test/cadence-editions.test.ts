@@ -66,8 +66,24 @@ describe("briefing editions", () => {
     });
 
     expect(edition.status).toBe("published");
+    expect(edition.title).toBe("Hourly brief");
+    expect(edition.summary).toBe("1 update in this hourly brief.");
     expect(edition.sections).toHaveLength(1);
     expect(edition.sections[0].evidence[0].messageId).toBe(message.id);
+  });
+
+  it("localizes edition chrome for Arabic feeds", () => {
+    const edition = buildBriefingEdition({
+      briefing: { ...personalNewsBriefing, language: "ar" },
+      messages: [],
+      windowStart: "2026-06-16T08:00:00.000Z",
+      windowEnd: "2026-06-16T09:00:00.000Z",
+      now: new Date("2026-06-16T09:00:10.000Z")
+    });
+
+    expect(edition.title).toBe("موجز الساعة");
+    expect(edition.summary).toBe("لا توجد تحديثات موثوقة في موجز الساعة.");
+    expect(edition.sections[0].title).toBe("لا تحديثات");
   });
 
   it("publishes an explicit empty edition when nothing meaningful happened", () => {
@@ -80,6 +96,6 @@ describe("briefing editions", () => {
     });
 
     expect(edition.status).toBe("empty");
-    expect(edition.summary).toContain("No meaningful verified update");
+    expect(edition.summary).toBe("No verified updates in this hourly brief.");
   });
 });

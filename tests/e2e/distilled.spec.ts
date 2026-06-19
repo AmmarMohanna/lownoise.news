@@ -49,7 +49,7 @@ const edition = {
   cadence: "hourly",
   windowStart: "2026-06-16T07:00:00.000Z",
   windowEnd: "2026-06-16T08:00:00.000Z",
-  title: "Hourly briefing",
+  title: "Hourly brief",
   summary: item.summary,
   sections: [
     {
@@ -204,9 +204,12 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await expect(page.locator(".news-item").filter({ hasText: item.summary }).first()).toBeVisible();
   await expect(page.getByText(/confidence|source count|breaking/i)).toHaveCount(0);
 
-  await page.getByRole("button", { name: /show .*briefing/i }).first().click();
+  await page.getByRole("button", { name: /show .*brief/i }).first().click();
   await expect(page.getByText("Beirut Local")).toBeVisible();
+  await page.getByRole("button", { name: /^report$/i }).click();
+  await expect(page.getByRole("dialog", { name: "report" })).toBeVisible();
   await expect(page.getByRole("link", { name: /original/i })).toHaveAttribute("href", item.evidence[0].sourceUrl);
+  await page.getByRole("button", { name: "close report" }).click();
 
   await page.getByPlaceholder("search published briefing").fill("power supply");
   await page.keyboard.press("Enter");
