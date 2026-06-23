@@ -22,8 +22,8 @@ html {
   --line-strong: #d4c1a3;
   --text: #171717;
   --muted: #737373;
-  --accent: #fc7100;
-  --accent-soft: #b45309;
+  --accent: #2f6fbb;
+  --accent-soft: #245b9f;
   --danger: #9f2d20;
   --shadow: none;
   --motion: 170ms ease;
@@ -40,8 +40,8 @@ html {
   --line-strong: #5b4a35;
   --text: #f2efe8;
   --muted: #aaa298;
-  --accent: #ff9a3d;
-  --accent-soft: #ffc18a;
+  --accent: #7fb7f0;
+  --accent-soft: #b9d9f7;
   --danger: #e07f72;
   --shadow: none;
 }

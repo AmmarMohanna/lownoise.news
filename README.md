@@ -74,6 +74,11 @@ See `.env.example` for descriptions.
 
 `CLOUDFLARE_ZONE_ID` is only needed for custom-domain routing.
 
+`EMAIL_FROM` must use a sender domain that is onboarded in Cloudflare Email
+Sending. For public user registration, Cloudflare must also allow sending to
+arbitrary recipients; Email Routing-only bindings can send only to verified
+destination addresses in the Cloudflare account.
+
 ## First Self-Hosted Setup
 
 1. Deploy the Worker.

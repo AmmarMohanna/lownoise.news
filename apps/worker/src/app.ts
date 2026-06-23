@@ -263,6 +263,7 @@ export function createApp(options: AppOptions = {}) {
     try {
       await sendVerificationToken(repo, c.env, account);
     } catch (error) {
+      logAuthEmailFailure("verification", account, error);
       await repo.deleteAccount(account.id);
       return c.json({ error: "could not send verification email" }, 502);
     }
@@ -311,7 +312,11 @@ export function createApp(options: AppOptions = {}) {
     if (!(await verifyTurnstileIfConfigured(c, input.turnstileToken))) return c.json({ ok: true });
     const account = await repo.getAccountByEmail(email);
     if (account && account.emailVerifiedAt && !account.disabledAt) {
-      await sendPasswordResetToken(repo, c.env, account);
+      try {
+        await sendPasswordResetToken(repo, c.env, account);
+      } catch (error) {
+        logAuthEmailFailure("password reset", account, error);
+      }
     }
     return c.json({ ok: true });
   });
@@ -865,6 +870,14 @@ function publicAccount(account: AccountRecord) {
     emailVerifiedAt: account.emailVerifiedAt,
     disabledAt: account.disabledAt
   };
+}
+
+function logAuthEmailFailure(kind: string, account: AccountRecord, error: unknown): void {
+  console.error(`Could not send ${kind} email`, {
+    accountId: account.id,
+    emailDomain: account.email.split("@").at(-1),
+    error: error instanceof Error ? error.message : String(error)
+  });
 }
 
 function publicBriefing(briefing: BriefingConfig): Omit<BriefingConfig, "interestProfile" | "styleInstruction"> {

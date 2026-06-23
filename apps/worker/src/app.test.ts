@@ -151,21 +151,31 @@ describe("worker app accounts", () => {
   it("rolls back signup accounts when verification email sending fails", async () => {
     const repo = new InMemoryRepository();
     const app = createApp({ repository: repo });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    const response = await app.request(
-      "/api/auth/register",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: "failed@test.com", username: "Failed User", password: "password123" })
-      },
-      env(new FailingEmail() as unknown as FakeEmail)
-    );
+    try {
+      const response = await app.request(
+        "/api/auth/register",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: "failed@test.com", username: "Failed User", password: "password123" })
+        },
+        env(new FailingEmail() as unknown as FakeEmail)
+      );
 
-    expect(response.status).toBe(502);
-    expect(response.headers.get("content-type")).toContain("application/json");
-    expect(await response.json()).toEqual({ error: "could not send verification email" });
-    expect(await repo.getAccountByEmail("failed@test.com")).toBeNull();
+      expect(response.status).toBe(502);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(await response.json()).toEqual({ error: "could not send verification email" });
+      expect(await repo.getAccountByEmail("failed@test.com")).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith("Could not send verification email", {
+        accountId: "account_1",
+        emailDomain: "test.com",
+        error: "email service unavailable"
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it("verifies email before login and supports password reset", async () => {
