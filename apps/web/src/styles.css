@@ -205,7 +205,7 @@ h2 {
   min-height: 100dvh;
   margin: 0 auto;
   padding:
-    calc(24px + env(safe-area-inset-top))
+    0
     calc(18px + env(safe-area-inset-right))
     calc(64px + env(safe-area-inset-bottom))
     calc(18px + env(safe-area-inset-left));
@@ -220,19 +220,25 @@ header {
   justify-content: space-between;
   gap: 12px;
   position: sticky;
-  top: max(12px, env(safe-area-inset-top));
+  top: 0;
   z-index: 2;
-  min-height: 4.5rem;
-  padding: 0;
+  min-height: calc(4.5rem + env(safe-area-inset-top));
+  margin-inline: calc(50% - 50vw);
+  padding:
+    calc(10px + env(safe-area-inset-top))
+    max(calc(18px + env(safe-area-inset-right)), calc((100vw - 980px) / 2 + 18px))
+    10px
+    max(calc(18px + env(safe-area-inset-left)), calc((100vw - 980px) / 2 + 18px));
   border: 0;
+  border-bottom: 1px solid var(--line);
   border-radius: 0;
-  background: transparent;
+  background: var(--surface);
   backdrop-filter: none;
   box-shadow: none;
 }
 
 :root:not([data-theme="dark"]) header {
-  background: transparent;
+  background: var(--surface);
 }
 
 .header-primary,
@@ -1398,12 +1404,12 @@ summary {
 
 @media (display-mode: standalone) {
   .shell {
-    padding-top: calc(14px + env(safe-area-inset-top));
+    padding-top: 0;
     padding-bottom: calc(28px + env(safe-area-inset-bottom));
   }
 
   header {
-    top: env(safe-area-inset-top);
+    top: 0;
   }
 }
 
@@ -1453,7 +1459,7 @@ summary {
   .shell {
     gap: 18px;
     padding:
-      calc(14px + env(safe-area-inset-top))
+      0
       calc(14px + env(safe-area-inset-right))
       calc(24px + env(safe-area-inset-bottom))
       calc(14px + env(safe-area-inset-left));
@@ -1463,7 +1469,12 @@ summary {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;
-    padding: 12px;
+    min-height: calc(4.5rem + env(safe-area-inset-top));
+    padding:
+      calc(10px + env(safe-area-inset-top))
+      calc(14px + env(safe-area-inset-right))
+      10px
+      calc(14px + env(safe-area-inset-left));
   }
 
   .header-primary,

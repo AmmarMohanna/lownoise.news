@@ -97,7 +97,7 @@
       .shell {
         width: min(980px, 100%);
         margin: 0 auto;
-        padding: 24px 18px 64px;
+        padding: 0 18px 64px;
         display: grid;
         gap: 24px;
       }
@@ -107,14 +107,21 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        min-height: 4.5rem;
-        padding: 0;
+        min-height: calc(4.5rem + env(safe-area-inset-top));
+        margin-inline: calc(50% - 50vw);
+        padding:
+          calc(10px + env(safe-area-inset-top))
+          max(calc(18px + env(safe-area-inset-right)), calc((100vw - 980px) / 2 + 18px))
+          10px
+          max(calc(18px + env(safe-area-inset-left)), calc((100vw - 980px) / 2 + 18px));
         border: 0;
-        background: transparent;
+        border-bottom: 1px solid #e8dcc7;
+        background: #fffdf8;
       }
 
       html[data-theme="dark"] header {
-        background: transparent;
+        border-color: #383226;
+        background: #1d1b18;
       }
 
       .header-primary,
