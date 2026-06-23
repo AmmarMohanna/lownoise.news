@@ -3,6 +3,7 @@ import {
   buildSummaryPrompt,
   createEvidenceOnlySummary,
   demoMessages,
+  firstSentence,
   personalNewsBriefing,
   processMessages,
   sanitizeEvidenceText,
@@ -476,6 +477,34 @@ describe("summary prompt", () => {
     expect(sanitizeSummary("جريحان نتيجة تصادم بين مركبتين على أوتوستراد الناعمة باتجاه بيروت")).toBe(
       "جريحان نتيجة تصادم بين مركبتين على أوتوستراد الناعمة باتجاه بيروت"
     );
+  });
+
+  it("recognizes Arabic sentence endings instead of slicing at the fallback limit", () => {
+    expect(firstSentence("أعلنت الرئاسة اللبنانية موقفها من التطورات؟ وأضافت أنها تتابع الاتصالات.")).toBe(
+      "أعلنت الرئاسة اللبنانية موقفها من التطورات؟"
+    );
+  });
+
+  it("does not cut Arabic evidence-only summaries at 220 characters", () => {
+    const text = "الرئاسة اللبنانية: شكر الرئيس عون نائب الرئيس الاميركي ووزير الخارجية على الاهتمام الذي تبديه الولايات المتحدة حيال لبنان بهدف انهاء الحرب فيه وتعزيز سلطة الدولة اللبنانية واستقلالية قرارها باعتبارها المسؤولة وحدها عن حفظ";
+    expect([...text].slice(0, 220).join("")).toMatch(/عن حف$/u);
+
+    expect(
+      createEvidenceOnlySummary({ ...personalNewsBriefing, language: "ar" }, [
+        {
+          messageId: "presidency-update",
+          sourceId: "src_lbci",
+          sourceTitle: "LBCI_NEWS",
+          sourceType: "channel",
+          sourceProvider: "apify",
+          sourceKind: "x_profile",
+          postedAt: "2026-06-23T14:53:00.000Z",
+          text,
+          links: [],
+          media: []
+        }
+      ])
+    ).toBe(text);
   });
 
   it("removes no-details artifact sentences while keeping factual content", () => {

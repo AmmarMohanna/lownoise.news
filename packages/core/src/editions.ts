@@ -1,6 +1,7 @@
 import { cadenceLabel } from "./cadence";
 import { processMessages } from "./processing";
 import { sanitizeEvidenceText, sanitizeSummary } from "./summarization";
+import { firstSentence, normalizeText } from "./text";
 import type {
   BriefingEvidence,
   BriefingConfig,
@@ -160,10 +161,12 @@ export function sanitizeEditionSectionForLanguage(
   section: BriefingEditionSection,
   language: BriefingConfig["language"]
 ): BriefingEditionSection {
+  const evidence = section.evidence.map((entry) => sanitizeEvidenceForLanguage(entry, language));
+  const summary = repairTruncatedSectionSummary(sanitizeEvidenceText(section.summary, language), evidence, language);
   return {
     ...section,
-    summary: sanitizeEvidenceText(section.summary, language),
-    evidence: section.evidence.map((entry) => sanitizeEvidenceForLanguage(entry, language))
+    summary,
+    evidence
   };
 }
 
@@ -175,6 +178,26 @@ function sanitizeEvidenceForLanguage(
     ...evidence,
     text: sanitizeEvidenceText(evidence.text, language)
   };
+}
+
+function repairTruncatedSectionSummary(
+  summary: string,
+  evidence: BriefingEvidence[],
+  language: BriefingConfig["language"]
+): string {
+  if (!summary || /[.!?؟]$/u.test(summary)) return summary;
+  if ([...summary].length < 200) return summary;
+  const normalizedSummary = normalizeText(summary);
+  if (!normalizedSummary) return summary;
+
+  const source = evidence.find((entry) => {
+    const normalizedEvidence = normalizeText(entry.text);
+    return normalizedEvidence.length > normalizedSummary.length && normalizedEvidence.startsWith(normalizedSummary);
+  });
+  if (!source) return summary;
+
+  const repaired = sanitizeSummary(firstSentence(source.text), language);
+  return repaired.length > summary.length ? repaired : summary;
 }
 
 function referenceSentence(summary: string, referenceNumber: number): string {

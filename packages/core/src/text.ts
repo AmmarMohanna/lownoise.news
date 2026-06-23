@@ -91,6 +91,8 @@ const EVENT_STOP_WORDS = new Set([
 ]);
 
 const ARABIC_DIACRITICS = /[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED]/gu;
+const FIRST_SENTENCE_MAX_CHARS = 320;
+const FIRST_SENTENCE_BOUNDARY_MAX_CHARS = 420;
 
 export function normalizeText(text: string): string {
   return text
@@ -160,8 +162,19 @@ export function jaccardSimilarity(left: string[], right: string[]): number {
 
 export function firstSentence(text: string): string {
   const trimmed = text.replace(/\s+/g, " ").trim();
-  const match = trimmed.match(/^(.{24,220}?[.!?])\s/);
-  return (match?.[1] ?? trimmed.slice(0, 220)).trim();
+  const match = trimmed.match(new RegExp(`^(.{24,${FIRST_SENTENCE_BOUNDARY_MAX_CHARS}}?[.!?؟])(?:\\s|$)`, "u"));
+  if (match) return match[1].trim();
+  if (trimmed.length <= FIRST_SENTENCE_MAX_CHARS) return trimmed;
+  return clipAtWordBoundary(trimmed, FIRST_SENTENCE_MAX_CHARS);
+}
+
+function clipAtWordBoundary(text: string, maxChars: number): string {
+  const clipped = text.slice(0, maxChars).trimEnd();
+  const lastSpace = clipped.lastIndexOf(" ");
+  if (lastSpace >= Math.floor(maxChars * 0.65)) {
+    return clipped.slice(0, lastSpace).replace(/[,:;،؛]+$/u, "").trim();
+  }
+  return clipped;
 }
 
 export function stableHash(input: string): string {

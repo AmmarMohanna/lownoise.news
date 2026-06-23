@@ -90,6 +90,7 @@ export function buildSummaryPrompt(input: SummaryInput): string {
     "Do not turn teasers, cliffhangers, headlines that require opening a link, vague reactions, or details-below captions into briefing items.",
     "If the evidence does not contain enough clear information/value to publish, return exactly NO_POST.",
     "If publishing, write one short standalone sentence that states the useful fact.",
+    "Do not end mid-word or with an incomplete sentence; if a source appears truncated, summarize only the complete verified facts.",
     "Do not include URLs, social handles, hashtags, emoji markers, or source-channel prefixes.",
     "For Arabic briefings, do not include English translations copied from bilingual source posts.",
     "Do not add political framing labels unless the user's instruction explicitly asks for them.",
@@ -112,7 +113,7 @@ export function sanitizeSummary(summary: string, language?: BriefingConfig["lang
 
   const uniqueSentences: string[] = [];
   const seen = new Set<string>();
-  const sentences = cleaned.match(/[^.!?]+[.!?]?/g) ?? [cleaned];
+  const sentences = cleaned.match(/[^.!?؟]+[.!?؟]?/gu) ?? [cleaned];
 
   for (const sentence of sentences.map((entry) => entry.trim()).filter(Boolean)) {
     if (isArtifactSentence(sentence) || isLowInformationSummary(sentence)) continue;

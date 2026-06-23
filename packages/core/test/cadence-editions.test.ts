@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBriefingEdition, getDueBriefingWindow, personalNewsBriefing, synthesizeEditionNarrativeSummary } from "../src";
+import { buildBriefingEdition, getDueBriefingWindow, personalNewsBriefing, sanitizeEditionSectionForLanguage, synthesizeEditionNarrativeSummary } from "../src";
 import type { NormalizedMessage } from "../src";
 
 describe("briefing cadence", () => {
@@ -111,6 +111,36 @@ describe("briefing editions", () => {
     expect(edition.summary).toBe("تحديثات موثوقة: نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد [1].");
     expect(edition.sections[0].summary).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
     expect(edition.sections[0].evidence[0].text).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
+  });
+
+  it("repairs saved Arabic section summaries that were cut from full evidence", () => {
+    const fullText = "الرئاسة اللبنانية: شكر الرئيس عون نائب الرئيس الاميركي ووزير الخارجية على الاهتمام الذي تبديه الولايات المتحدة حيال لبنان بهدف انهاء الحرب فيه وتعزيز سلطة الدولة اللبنانية واستقلالية قرارها باعتبارها المسؤولة وحدها عن حفظ";
+    const cutSummary = [...fullText].slice(0, 220).join("");
+    expect(cutSummary).toMatch(/عن حف$/u);
+
+    const section = sanitizeEditionSectionForLanguage(
+      {
+        title: "تحديثات",
+        summary: cutSummary,
+        evidence: [
+          {
+            messageId: "presidency-update",
+            sourceId: "src_lbci",
+            sourceTitle: "LBCI_NEWS",
+            sourceType: "channel",
+            sourceProvider: "apify",
+            sourceKind: "x_profile",
+            postedAt: "2026-06-23T14:53:00.000Z",
+            text: fullText,
+            links: [],
+            media: []
+          }
+        ]
+      },
+      "ar"
+    );
+
+    expect(section.summary).toBe(fullText);
   });
 
   it("synthesizes multiple updates into one referenced paragraph", () => {
