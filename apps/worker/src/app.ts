@@ -26,7 +26,6 @@ import {
   verifyPassword,
   verifySession
 } from "./auth";
-import { BRIEFING_PUBLICATION_DELAY_MS } from "./editions";
 import { sendPasswordResetEmail, sendVerificationEmail } from "./mailer";
 import { D1Repository } from "./repository";
 import { addSourceFromInput, refreshEnabledSources } from "./sources";
@@ -879,16 +878,9 @@ function publicBriefing(briefing: BriefingConfig): Omit<BriefingConfig, "interes
     briefingCadence: briefing.briefingCadence,
     briefingTimeOfDay: briefing.briefingTimeOfDay,
     briefingTimezone: briefing.briefingTimezone,
-    nextBriefingAt: publicNextBriefingAt(briefing.nextBriefingAt),
+    nextBriefingAt: briefing.nextBriefingAt,
     retentionDays: FIXED_RETENTION_DAYS
   };
-}
-
-function publicNextBriefingAt(nextBriefingAt: string | undefined): string | undefined {
-  if (!nextBriefingAt) return undefined;
-  const next = new Date(nextBriefingAt).getTime();
-  if (!Number.isFinite(next)) return nextBriefingAt;
-  return new Date(next + BRIEFING_PUBLICATION_DELAY_MS).toISOString();
 }
 
 function publicEdition(

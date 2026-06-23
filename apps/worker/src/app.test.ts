@@ -368,7 +368,11 @@ describe("worker app accounts", () => {
 
     const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
     expect(feedResponse.status).toBe(200);
-    const feed = (await feedResponse.json()) as { editions: Array<{ id: string; summary: string; sections: unknown[] }> };
+    const feed = (await feedResponse.json()) as {
+      briefing: { nextBriefingAt?: string };
+      editions: Array<{ id: string; summary: string; sections: unknown[] }>;
+    };
+    expect(feed.briefing.nextBriefingAt).toBe("2026-06-15T20:00:00.000Z");
     expect(feed.editions[0].summary).toContain("Verified updates:");
     expect(feed.editions[0].summary).toContain("[1]");
     expect(feed.editions[0].sections).toEqual([]);
