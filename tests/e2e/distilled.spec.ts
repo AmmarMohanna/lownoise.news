@@ -415,6 +415,10 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
   await expect(page.getByRole("button", { name: "feed settings for Personal Briefing" })).toHaveAttribute("title", "feed settings");
   await expect(page.getByRole("button", { name: "fetch latest" })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "fetch latest" })).toHaveAttribute("title", "refresh");
+  await expect(page.getByPlaceholder("https://t.me/LebUpdate, https://x.com/NASA, or Lebanon electricity")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Telegram URL" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "X URL" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Search topic" })).toBeVisible();
   await expect(page.locator(".health-summary .status-dot.live")).toBeVisible();
   await expect(page.getByRole("button", { name: "retry processing" })).toHaveCount(0);
   await page.locator(".health-summary > summary").click();
@@ -447,6 +451,7 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
   await expect(page.getByText("private", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "feed help" }).click();
   await expect(page.getByRole("dialog", { name: "feed help" })).toBeVisible();
+  await expect(page.getByText("Paste a Telegram or X URL, or type a search topic.")).toBeVisible();
   await expect(page.getByText("Copy the feed URL when you want someone to read it.")).toBeVisible();
   await page.getByRole("button", { name: "close feed help" }).click();
   await expect(page.getByText("Beirut Local")).toBeVisible();
@@ -549,11 +554,11 @@ test("first-run setup sheet creates the first feed and source", async ({ page })
   await page.getByLabel("username").fill("Ammar News");
   await page.getByLabel("feed name").fill("City Watch");
   await page.getByLabel("interest profile").fill("Track Beirut infrastructure and public safety.");
-  await page.getByLabel("first source").fill("t: LebUpdate");
+  await page.getByLabel("first source").fill("https://t.me/LebUpdate");
   await page.getByRole("button", { name: "finish setup" }).click();
 
   await expect.poll(() => savedBriefing?.title).toBe("City Watch");
   expect(savedBriefing?.publicFeedEnabled).toBe(true);
-  expect(sourceBody).toEqual({ briefingId: "briefing_default", input: "t: LebUpdate" });
+  expect(sourceBody).toEqual({ briefingId: "briefing_default", input: "https://t.me/LebUpdate" });
   await expect(page.getByRole("dialog", { name: "setup feed" })).toHaveCount(0);
 });

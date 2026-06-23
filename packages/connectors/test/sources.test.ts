@@ -16,6 +16,20 @@ describe("detectSourceInput", () => {
       username: "LebUpdate"
     });
 
+    expect(detectSourceInput("https://x.com/NASA")).toMatchObject({
+      provider: "apify",
+      kind: "x_profile",
+      username: "NASA",
+      sourceUrl: "https://x.com/NASA"
+    });
+
+    expect(detectSourceInput("https://x.com/NASA/status/1234567890")).toMatchObject({
+      provider: "apify",
+      kind: "x_profile",
+      username: "NASA",
+      sourceUrl: "https://x.com/NASA"
+    });
+
     expect(detectSourceInput("rss: https://example.com/feed.xml")).toMatchObject({
       provider: "rss",
       kind: "rss_feed",
@@ -29,6 +43,16 @@ describe("detectSourceInput", () => {
         queries: ["lebanon power"],
         geo: "US",
         maxItemsPerQuery: 15
+      }
+    });
+
+    expect(detectSourceInput("lebanon power")).toMatchObject({
+      provider: "apify",
+      kind: "google_news",
+      input: "lebanon power",
+      title: "Google News: lebanon power",
+      actorInput: {
+        queries: ["lebanon power"]
       }
     });
 

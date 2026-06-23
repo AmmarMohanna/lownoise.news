@@ -855,6 +855,34 @@ summary {
   gap: 10px;
 }
 
+.source-add > label {
+  grid-column: 1;
+  min-width: 0;
+}
+
+.source-add > .primary-button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: end;
+}
+
+.source-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.source-add .source-examples {
+  grid-column: 1;
+}
+
+.source-examples button {
+  min-height: 30px;
+  padding: 4px 8px;
+  color: var(--muted);
+}
+
 .status-line {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -1501,6 +1529,12 @@ summary {
   .source-add {
     grid-template-columns: 1fr;
     max-width: none;
+  }
+
+  .source-add > .primary-button,
+  .source-add .source-examples {
+    grid-column: 1;
+    grid-row: auto;
   }
 
   .search {

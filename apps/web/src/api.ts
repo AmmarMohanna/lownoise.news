@@ -155,10 +155,10 @@ export async function getSources(briefingId: string): Promise<SourceRecord[]> {
   return payload.sources;
 }
 
-export async function addPublicTelegramSource(briefingId: string, url: string): Promise<SourceRefreshResult> {
+export async function addSource(briefingId: string, input: string): Promise<SourceRefreshResult> {
   return requestJson<SourceRefreshResult>("/api/me/sources", {
     method: "POST",
-    body: JSON.stringify({ briefingId, input: url })
+    body: JSON.stringify({ briefingId, input })
   });
 }
 

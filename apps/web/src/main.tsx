@@ -32,7 +32,7 @@ import {
 import type { BriefingConfig, BriefingEdition, BriefingEditionSection, BriefingEvidence } from "@distilled/core";
 import { personalNewsBriefing } from "@distilled/core";
 import {
-  addPublicTelegramSource,
+  addSource,
   deleteBriefing,
   deleteSource,
   forgotPassword,
@@ -66,6 +66,12 @@ import type { AccountRecord, AccountWithStats, FeedPayload, HealthStatus, Public
 import "./styles.css";
 
 const FEED_BATCH_SIZE = 20;
+
+const sourceInputExamples = [
+  { label: "Telegram URL", value: "https://t.me/LebUpdate" },
+  { label: "X URL", value: "https://x.com/NASA" },
+  { label: "Search topic", value: "Lebanon electricity" }
+];
 
 type ReportSelection = {
   editionId: string;
@@ -335,7 +341,7 @@ function AdminPage() {
       );
       if (input.sourceUrl.trim()) {
         setSourceStatus("checking the source and saving matching posts");
-        const response = await addPublicTelegramSource(saved.id, input.sourceUrl);
+        const response = await addSource(saved.id, input.sourceUrl);
         applySourceResponse(response);
         void pollHealthUntilSettled(saved.id, response.health);
       }
@@ -518,8 +524,25 @@ function AdminPage() {
             <div className="source-add">
               <label>
                 source
-                <input dir="ltr" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="t: LebUpdate · news: Lebanon Electricity · x: NASA" />
+                <input
+                  dir="ltr"
+                  value={sourceUrl}
+                  onChange={(event) => setSourceUrl(event.target.value)}
+                  placeholder="https://t.me/LebUpdate, https://x.com/NASA, or Lebanon electricity"
+                />
               </label>
+              <div className="source-examples" aria-label="source examples">
+                {sourceInputExamples.map((example) => (
+                  <button
+                    key={example.label}
+                    type="button"
+                    title={example.value}
+                    onClick={() => setSourceUrl(example.value)}
+                  >
+                    {example.label}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 className="primary-button"
@@ -529,8 +552,8 @@ function AdminPage() {
                   setError("");
                   try {
                     setBusyAction("add-source");
-                    setSourceStatus("checking the source and queuing matching posts");
-                    const response = await addPublicTelegramSource(briefing.id, sourceUrl);
+                    setSourceStatus(`checking ${sourceInputKind(sourceUrl)}`);
+                    const response = await addSource(briefing.id, sourceUrl.trim());
                     applySourceResponse(response);
                     setSourceUrl("");
                     setStatus("source added");
@@ -564,7 +587,7 @@ function AdminPage() {
               }}
             />
             <div className="source-list">
-              {sources.length === 0 ? <p className="muted">add source URLs or queries</p> : null}
+              {sources.length === 0 ? <p className="muted">paste a full source URL or type a topic</p> : null}
               {sources.map((source) => (
                 <div key={source.id} className="source-row">
                   <div className="source-copy">
@@ -1185,7 +1208,7 @@ function FeedHelpSheet(props: { onClose: () => void }) {
         </li>
         <li>
           <strong>sources</strong>
-          <span>Add Telegram, RSS, Google News, or X sources, then fetch latest.</span>
+          <span>Paste a Telegram or X URL, or type a search topic.</span>
         </li>
         <li>
           <strong>share</strong>
@@ -1248,8 +1271,25 @@ function FirstRunSetupSheet(props: {
         </label>
         <label>
           first source
-          <input dir="ltr" value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="t: LebUpdate · news: Beirut power" />
+          <input
+            dir="ltr"
+            value={sourceUrl}
+            onChange={(event) => setSourceUrl(event.target.value)}
+            placeholder="https://t.me/LebUpdate, https://x.com/NASA, or Beirut power"
+          />
         </label>
+        <div className="source-examples" aria-label="source examples">
+          {sourceInputExamples.map((example) => (
+            <button
+              key={example.label}
+              type="button"
+              title={example.value}
+              onClick={() => setSourceUrl(example.value)}
+            >
+              {example.label}
+            </button>
+          ))}
+        </div>
         <div className="sheet-actions">
           <button type="submit" className="primary-button" title="finish setup" disabled={props.busy || !title.trim() || !interestProfile.trim()}>
             <Save size={15} aria-hidden /> finish setup
@@ -2298,6 +2338,14 @@ function formatSourceRefreshResults(results: SourceIngestResult[]): string {
   if (totals.fetched === 0) return "no enabled sources to refresh";
   if (totals.imported === 0 && totals.skipped > 0) return `checked ${totals.fetched}, no new posts`;
   return `fetched ${totals.fetched}, saved ${totals.imported}`;
+}
+
+function sourceInputKind(input: string): string {
+  const trimmed = input.trim();
+  if (/^https?:\/\/(?:www\.)?t\.me\//i.test(trimmed) || /^@[A-Za-z0-9_]{3,}$/i.test(trimmed)) return "Telegram source";
+  if (/^https?:\/\/(?:www\.)?(?:x|twitter)\.com\//i.test(trimmed)) return "X source";
+  if (/^https?:\/\//i.test(trimmed)) return "source URL";
+  return "search topic";
 }
 
 function sourceProviderLabel(source: SourceRecord): string {

@@ -49,7 +49,7 @@ export function detectSourceInput(input: string): DetectedSourceInput {
 
   if (/^t:/i.test(trimmed)) {
     const channelInput = trimmed.replace(/^t:\s*/i, "").trim();
-    if (!channelInput) throw new Error("Enter a Telegram channel like t: LebUpdate");
+    if (!channelInput) throw new Error("Paste a Telegram URL like https://t.me/LebUpdate");
     return telegramInput(channelInput, trimmed);
   }
 
@@ -81,23 +81,8 @@ export function detectSourceInput(input: string): DetectedSourceInput {
 
   if (/^news:/i.test(trimmed)) {
     const query = trimmed.replace(/^news:\s*/i, "").trim();
-    if (!query) throw new Error("Enter a Google News query like news: Lebanon Electricity");
-    return {
-      provider: "apify",
-      kind: "google_news",
-      input: trimmed,
-      title: `Google News: ${query}`,
-      actorInput: {
-        queries: [query],
-        geo: "US",
-        language: "en",
-        maxItemsPerQuery: 15,
-        maxQueries: 1,
-        dedupe: true,
-        requestDelayMs: 0,
-        maxConcurrency: 1
-      }
-    };
+    if (!query) throw new Error("Type a search topic like Lebanon electricity");
+    return googleNewsInput(query, trimmed);
   }
 
   if (/^x:/i.test(trimmed)) {
@@ -115,7 +100,9 @@ export function detectSourceInput(input: string): DetectedSourceInput {
     return detectAdvancedApifyInput(trimmed);
   }
 
-  throw new Error("Enter t:, Telegram, RSS, news:, x:, linkedin:, or apify: source input.");
+  if (!/^https?:\/\//i.test(trimmed)) return googleNewsInput(trimmed, trimmed);
+
+  throw new Error("Paste a full Telegram or X URL, or type a search topic.");
 }
 
 export function defaultActorIdForKind(kind: SourceKind, env: {
@@ -157,7 +144,7 @@ function telegramInput(value: string, original: string): DetectedSourceInput {
 function detectXInput(value: string, original: string): DetectedSourceInput {
   const handle = value.match(/^@?([A-Za-z0-9_]{1,15})$/)?.[1];
   if (handle) return xProfileInput(handle, original);
-  if (!value) throw new Error("Enter an X handle or query like x: NASA");
+  if (!value) throw new Error("Paste an X URL like https://x.com/NASA or type a search topic.");
   return {
     provider: "apify",
     kind: "x_search",
@@ -167,6 +154,25 @@ function detectXInput(value: string, original: string): DetectedSourceInput {
       searchTerms: [value],
       sort: "Latest",
       maxItems: 20
+    }
+  };
+}
+
+function googleNewsInput(query: string, original: string): DetectedSourceInput {
+  return {
+    provider: "apify",
+    kind: "google_news",
+    input: original,
+    title: `Google News: ${query}`,
+    actorInput: {
+      queries: [query],
+      geo: "US",
+      language: "en",
+      maxItemsPerQuery: 15,
+      maxQueries: 1,
+      dedupe: true,
+      requestDelayMs: 0,
+      maxConcurrency: 1
     }
   };
 }
