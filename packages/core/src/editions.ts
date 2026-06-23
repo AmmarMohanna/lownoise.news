@@ -16,6 +16,20 @@ export interface BuildBriefingEditionInput {
   now: Date;
 }
 
+const REFERENCE_LIMITS: Record<BriefingConfig["briefingCadence"], number> = {
+  hourly: 6,
+  daily: 8,
+  weekly: 10,
+  monthly: 10
+};
+
+const SUMMARY_WORD_LIMITS: Record<BriefingConfig["briefingCadence"], number> = {
+  hourly: 150,
+  daily: 220,
+  weekly: 280,
+  monthly: 320
+};
+
 export function buildBriefingEdition(input: BuildBriefingEditionInput): BriefingEdition {
   const result = processMessages({
     briefing: input.briefing,
@@ -25,7 +39,11 @@ export function buildBriefingEdition(input: BuildBriefingEditionInput): Briefing
   });
   const items = result.publishedItems.filter((item) => item.summary);
   const sections = items.length > 0
-    ? items.map((item) => itemToSection(item, input.briefing.language))
+    ? selectEditionReferenceSections(
+        items.map((item) => itemToSection(item, input.briefing.language)),
+        input.briefing.briefingCadence,
+        input.briefing.language
+      )
     : [emptySection(input.briefing.briefingCadence, input.briefing.language)];
   const status = items.length > 0 ? "published" : "empty";
   const title = editionTitle(input.briefing.briefingCadence, input.briefing.language);
@@ -80,33 +98,60 @@ export function synthesizeEditionNarrativeSummary(
   cadence: BriefingConfig["briefingCadence"],
   language: BriefingConfig["language"]
 ): string {
-  const referencedUpdates = sections
+  const referencedSections = selectEditionReferenceSections(sections, cadence, language);
+  const referencedUpdates = referencedSections
     .map((section, index) => referenceSentence(section.summary, index + 1))
     .filter(Boolean);
 
   if (referencedUpdates.length === 0) return editionSummary(0, cadence, language);
 
+  let summary: string;
   if (language === "ar") {
     const [first, ...rest] = referencedUpdates;
-    return [
+    summary = [
       `${arabicNarrativeIntro(cadence)} ${first}.`,
       ...rest.map((update, index) => `${arabicNarrativeConnector(index)} ${update}.`)
     ].join(" ");
+    return trimSummaryToCadenceLimit(summary, cadence);
   }
 
   if (language === "fr") {
     const [first, ...rest] = referencedUpdates;
-    return [
+    summary = [
       `${frenchNarrativeIntro(cadence)} ${first}.`,
       ...rest.map((update, index) => `${frenchNarrativeConnector(index)} ${update}.`)
     ].join(" ");
+    return trimSummaryToCadenceLimit(summary, cadence);
   }
 
   const [first, ...rest] = referencedUpdates;
-  return [
+  summary = [
     `${englishNarrativeIntro(cadence)} ${first}.`,
     ...rest.map((update, index) => `${englishNarrativeConnector(index)} ${lowerLeadingEnglishArticle(update)}.`)
   ].join(" ");
+  return trimSummaryToCadenceLimit(summary, cadence);
+}
+
+export function selectEditionReferenceSections(
+  sections: BriefingEditionSection[],
+  cadence: BriefingConfig["briefingCadence"],
+  language: BriefingConfig["language"],
+  options: { strictLanguage?: boolean } = {}
+): BriefingEditionSection[] {
+  const referenceLimit = REFERENCE_LIMITS[cadence] ?? REFERENCE_LIMITS.hourly;
+  return sections
+    .filter((section) => section.summary.trim())
+    .filter((section) => !options.strictLanguage || sectionSummaryMatchesFeedLanguage(section.summary, language))
+    .slice(0, referenceLimit);
+}
+
+export function sectionSummaryMatchesFeedLanguage(summary: string, language: BriefingConfig["language"]): boolean {
+  const hasArabic = /[\u0600-\u06FF]/u.test(summary);
+  const hasLatin = /[A-Za-zÀ-ÖØ-öø-ÿ]/u.test(summary);
+  if (!summary.trim()) return false;
+  if (language === "ar") return hasArabic;
+  if (language === "en" || language === "fr") return hasLatin || !hasArabic;
+  return true;
 }
 
 function referenceSentence(summary: string, referenceNumber: number): string {
@@ -116,6 +161,28 @@ function referenceSentence(summary: string, referenceNumber: number): string {
     .trim()
     .replace(/[.!؟?]+$/u, "");
   return cleaned ? `${cleaned} [${referenceNumber}]` : "";
+}
+
+function trimSummaryToCadenceLimit(summary: string, cadence: BriefingConfig["briefingCadence"]): string {
+  const wordLimit = SUMMARY_WORD_LIMITS[cadence] ?? SUMMARY_WORD_LIMITS.hourly;
+  if (wordCount(summary) <= wordLimit) return summary;
+
+  const completeSentences = summary.match(/[^.!؟?]+[.!؟?]+/gu) ?? [];
+  const kept: string[] = [];
+  for (const sentence of completeSentences) {
+    const candidate = [...kept, sentence.trim()].join(" ");
+    if (wordCount(candidate) > wordLimit) break;
+    kept.push(sentence.trim());
+  }
+  if (kept.length > 0) return kept.join(" ");
+
+  const words = summary.trim().split(/\s+/u);
+  return `${words.slice(0, wordLimit).join(" ").replace(/[,:;،]+$/u, "")}.`;
+}
+
+function wordCount(value: string): number {
+  const words = value.trim().split(/\s+/u).filter(Boolean);
+  return words.length;
 }
 
 function sectionTitle(item: BriefingItem, language: BriefingConfig["language"]): string {

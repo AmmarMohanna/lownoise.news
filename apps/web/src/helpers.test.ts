@@ -47,8 +47,10 @@ describe("web helpers", () => {
     const french = formatTime("2026-06-16T10:58:00.000Z", "fr");
 
     expect(english).toMatch(/^[A-Z][a-z]+ \d{1,2}, \d{2}:\d{2}$/);
-    expect(arabic).toBe(english);
-    expect(french).toBe(english);
+    expect(arabic).toMatch(/[\u0600-\u06FF]/u);
+    expect(arabic).not.toBe(english);
+    expect(french).toMatch(/\d{1,2} [A-Za-zÀ-ÖØ-öø-ÿ]+, \d{2}:\d{2}/u);
+    expect(french).not.toBe(english);
     expect(english).not.toMatch(/am|pm/i);
   });
 });

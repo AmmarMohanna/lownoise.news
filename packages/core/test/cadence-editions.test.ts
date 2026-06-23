@@ -109,6 +109,61 @@ describe("briefing editions", () => {
     );
   });
 
+  it("caps hourly synthesis to a medium paragraph with practical references", () => {
+    const sections = Array.from({ length: 8 }, (_, index) => ({
+      title: "Update",
+      summary: `Update ${index + 1} adds confirmed context about public services, official timing, affected neighborhoods, operational limits, and what residents should expect before the next scheduled notice from authorities.`,
+      evidence: []
+    }));
+
+    const summary = synthesizeEditionNarrativeSummary(sections, "hourly", "en");
+
+    expect(summary).toContain("[1]");
+    expect(summary).not.toContain("[7]");
+    expect(summary.split(/\s+/u).filter(Boolean).length).toBeLessThanOrEqual(150);
+  });
+
+  it("groups multiple raw items into one reference bundle when they support the same point", () => {
+    const messages: NormalizedMessage[] = [
+      {
+        id: "briefing_default::power_a",
+        source: { id: "src_power_a", title: "Power Wire", type: "channel", provider: "telegram", kind: "telegram_channel" },
+        messageId: "power-a",
+        text: "Electricite du Liban confirmed two additional hours of power supply tonight after fuel shipments arrived.",
+        links: [],
+        media: [],
+        postedAt: "2026-06-16T08:15:00.000Z",
+        receivedAt: "2026-06-16T08:15:10.000Z",
+        sourceUrl: "https://t.me/powerA/1",
+        expiresAt: "2026-07-01T08:15:00.000Z"
+      },
+      {
+        id: "briefing_default::power_b",
+        source: { id: "src_power_b", title: "North Updates", type: "channel", provider: "telegram", kind: "telegram_channel" },
+        messageId: "power-b",
+        text: "Electricite du Liban confirmed two additional hours of power supply tonight after fuel shipments arrived.",
+        links: [],
+        media: [],
+        postedAt: "2026-06-16T08:18:00.000Z",
+        receivedAt: "2026-06-16T08:18:10.000Z",
+        sourceUrl: "https://t.me/powerB/1",
+        expiresAt: "2026-07-01T08:18:00.000Z"
+      }
+    ];
+
+    const edition = buildBriefingEdition({
+      briefing: personalNewsBriefing,
+      messages,
+      windowStart: "2026-06-16T08:00:00.000Z",
+      windowEnd: "2026-06-16T09:00:00.000Z",
+      now: new Date("2026-06-16T09:00:10.000Z")
+    });
+
+    expect(edition.sections).toHaveLength(1);
+    expect(edition.sections[0].evidence).toHaveLength(2);
+    expect(edition.summary).toContain("[1]");
+  });
+
   it("publishes an explicit empty edition when nothing meaningful happened", () => {
     const edition = buildBriefingEdition({
       briefing: personalNewsBriefing,

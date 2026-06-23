@@ -2,7 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  Circle,
+  CircleCheck,
   Compass,
   Copy,
   ExternalLink,
@@ -27,7 +30,7 @@ import {
   X
 } from "lucide-react";
 import type { BriefingConfig, BriefingEdition, BriefingEditionSection, BriefingEvidence } from "@distilled/core";
-import { personalNewsBriefing, synthesizeEditionNarrativeSummary } from "@distilled/core";
+import { personalNewsBriefing } from "@distilled/core";
 import {
   addPublicTelegramSource,
   deleteBriefing,
@@ -897,17 +900,19 @@ function ExploreFeedsPanel() {
   );
 }
 
-function ExploreFeedsSheet(props: { currentFeed?: PublicBriefing; onClose: () => void }) {
+function ExploreFeedsSheet(props: { currentFeed?: PublicBriefing; language?: "en" | "ar" | "fr"; onClose: () => void }) {
+  const language = props.language ?? "en";
   return (
-    <Sheet title="explore" closeLabel="close explore" icon={<Compass size={16} aria-hidden />} onClose={props.onClose}>
-      <ExploreFeedList currentFeed={props.currentFeed} />
+    <Sheet title={exploreControlLabel(language).toLowerCase()} closeLabel={closeExploreLabel(language)} icon={<Compass size={16} aria-hidden />} onClose={props.onClose}>
+      <ExploreFeedList currentFeed={props.currentFeed} language={language} />
     </Sheet>
   );
 }
 
-function ExploreFeedList(props: { currentFeed?: PublicBriefing }) {
+function ExploreFeedList(props: { currentFeed?: PublicBriefing; language?: "en" | "ar" | "fr" }) {
   const [feeds, setFeeds] = useState<PublicBriefing[] | null>(null);
   const [error, setError] = useState("");
+  const language = props.language ?? "en";
 
   useEffect(() => {
     let active = true;
@@ -924,8 +929,8 @@ function ExploreFeedList(props: { currentFeed?: PublicBriefing }) {
   }, []);
 
   if (error) return <p className="error">{error}</p>;
-  if (!feeds) return <p className="muted">loading feeds</p>;
-  if (feeds.length === 0) return <p className="muted">no starred feeds yet</p>;
+  if (!feeds) return <p className="muted">{loadingFeedsLabel(language)}</p>;
+  if (feeds.length === 0) return <p className="muted">{noStarredFeedsLabel(language)}</p>;
 
   return (
     <div className="explore-list">
@@ -1099,31 +1104,14 @@ function FeedSettingsSheet(props: {
           </div>
         </div>
         <div className="field-group">
-          <span>intensity</span>
-          <div className="segmented" role="group" aria-label="feed intensity">
-            {(["low", "medium", "high"] as const).map((intensity) => (
-              <button
-                key={intensity}
-                type="button"
-                className={props.briefing.intensity === intensity ? "active" : ""}
-                aria-pressed={props.briefing.intensity === intensity}
-                title={`${intensity} intensity`}
-                onClick={() => props.onPatch({ intensity })}
-              >
-                {intensity}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="field-group">
           <span>update rhythm</span>
           <div className="segmented" role="group" aria-label="briefing rhythm">
-            {(["hourly", "daily", "weekly", "monthly"] as const).map((briefingCadence) => (
+            {(["hourly", "daily", "weekly"] as const).map((briefingCadence) => (
               <button
                 key={briefingCadence}
                 type="button"
-                className={props.briefing.briefingCadence === briefingCadence ? "active" : ""}
-                aria-pressed={props.briefing.briefingCadence === briefingCadence}
+                className={visibleBriefingCadence(props.briefing.briefingCadence) === briefingCadence ? "active" : ""}
+                aria-pressed={visibleBriefingCadence(props.briefing.briefingCadence) === briefingCadence}
                 title={`${briefingCadence} briefing`}
                 onClick={() => props.onPatch({ briefingCadence })}
               >
@@ -1132,15 +1120,6 @@ function FeedSettingsSheet(props: {
             ))}
           </div>
         </div>
-        <label>
-          briefing time
-          <input
-            type="time"
-            value={props.briefing.briefingTimeOfDay}
-            disabled={props.briefing.briefingCadence === "hourly"}
-            onChange={(event) => props.onPatch({ briefingTimeOfDay: event.target.value || "00:00" })}
-          />
-        </label>
         <label>
           timezone
           <input
@@ -1295,6 +1274,11 @@ function HealthSummary(props: {
   const isPaused = props.briefing.paused;
   const activity = isHealthActivity(props.activity) ? props.activity : `${summary.latest} · ${summary.queueState}`;
   const nextBriefingAt = props.health?.nextBriefingAt ?? props.briefing.nextBriefingAt;
+  const nextBriefingValue = isPaused
+    ? pausedScheduleLabel(props.briefing.language)
+    : nextBriefingAt
+      ? <Timestamp value={nextBriefingAt} language={props.briefing.language} />
+      : "after save";
   return (
     <details className="health-summary">
       <summary className="health-summary-line" title="source status">
@@ -1318,8 +1302,8 @@ function HealthSummary(props: {
         />
         <StatusLine
           label="next briefing"
-          value={nextBriefingAt ? <Timestamp value={nextBriefingAt} language={props.briefing.language} /> : "after save"}
-          valueDir="ltr"
+          value={nextBriefingValue}
+          valueDir={isPaused ? textDirection(props.briefing.language) : "ltr"}
         />
         <StatusLine label="status" value={props.briefing.paused ? "paused" : "live"} />
         {failedJobs > 0 ? (
@@ -1631,6 +1615,7 @@ function FeedPage(props: { username: string; slug: string }) {
   const [visibleUnreadCount, setVisibleUnreadCount] = useState(FEED_BATCH_SIZE);
   const [clock, setClock] = useState(Date.now());
   const [selectedReport, setSelectedReport] = useState<ReportSelection | null>(null);
+  const [editionDetails, setEditionDetails] = useState<Map<string, BriefingEdition>>(() => new Map());
 
   async function refresh() {
     setError("");
@@ -1639,6 +1624,7 @@ function FeedPage(props: { username: string; slug: string }) {
     setEditions(next.editions);
     setExpanded(new Set());
     setEditionBusyIds(new Set());
+    setEditionDetails(new Map());
     setVisibleUnreadCount(FEED_BATCH_SIZE);
     setSelectedReport(null);
   }
@@ -1687,11 +1673,12 @@ function FeedPage(props: { username: string; slug: string }) {
   const hiddenUnreadCount = Math.max(0, unreadEditions.length - visibleUnreadEditions.length);
   const archivedReadEditions = editions.filter((edition) => readIds.has(edition.id));
   const language = payload?.briefing.language ?? "en";
+  const pageDir = textDirection(language);
   const canStar = Boolean(payload);
-  const nextBriefingLabel = payload?.briefing.nextBriefingAt
-    ? formatCountdown(payload.briefing.nextBriefingAt, clock, language)
-    : "";
-  const reportEdition = selectedReport ? editions.find((edition) => edition.id === selectedReport.editionId) : undefined;
+  const feedStatusMessage = payload ? feedStatusText(payload.briefing, clock, language) : "";
+  const reportEdition = selectedReport
+    ? editionDetails.get(selectedReport.editionId) ?? editions.find((edition) => edition.id === selectedReport.editionId)
+    : undefined;
   const reportSection = reportEdition && selectedReport ? reportEdition.sections[selectedReport.sectionIndex] : undefined;
   const feedTitle = payload ? (
     <span className="feed-page-title">
@@ -1700,26 +1687,18 @@ function FeedPage(props: { username: string; slug: string }) {
     </span>
   ) : "briefing";
 
-  function replaceEdition(detailed: BriefingEdition) {
-    setEditions((current) => current.map((entry) => (entry.id === detailed.id ? detailed : entry)));
-    setPayload((current) =>
-      current
-        ? {
-            ...current,
-            editions: current.editions.map((entry) => (entry.id === detailed.id ? detailed : entry))
-          }
-        : current
-    );
-  }
-
   async function loadEditionDetail(edition: BriefingEdition): Promise<BriefingEdition | null> {
-    const currentEdition = editions.find((entry) => entry.id === edition.id) ?? edition;
-    if (currentEdition.sections.length > 0) return currentEdition;
+    const cached = editionDetails.get(edition.id);
+    if (cached) return cached;
+    if (edition.sections.length > 0) {
+      setEditionDetails((current) => new Map(current).set(edition.id, edition));
+      return edition;
+    }
     if (!payload) return null;
     setEditionBusyIds((current) => new Set(current).add(edition.id));
     try {
       const detailed = await getFeedEdition(props.username, props.slug, edition.id);
-      replaceEdition(detailed);
+      setEditionDetails((current) => new Map(current).set(edition.id, detailed));
       return detailed;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1753,17 +1732,17 @@ function FeedPage(props: { username: string; slug: string }) {
     <Shell
       title={feedTitle}
       titleText={payload?.briefing.title ?? "briefing"}
-      meta={payload ? <>by <bdi>{payload.briefing.ownerUsername}</bdi></> : "loading feed"}
+      meta={payload ? <>{bylineLabel(language)} <bdi>{payload.briefing.ownerUsername}</bdi></> : loadingFeedLabel(language)}
       feed={payload?.briefing}
       pageLanguage={language}
     >
-      <div className="feed-tools">
+      <div className="feed-tools" dir={pageDir}>
         <div className="feed-actions">
-          <button type="button" title="refresh" onClick={() => refresh()}><RefreshCw size={15} aria-hidden /> refresh</button>
+          <button type="button" title={refreshControlLabel(language)} onClick={() => refresh()}><RefreshCw size={15} aria-hidden /> {refreshControlLabel(language)}</button>
           <button
             type="button"
             className={`star-vote${payload?.viewerHasStarred ? " is-starred" : ""}`}
-            title={payload?.viewerHasStarred ? "remove star" : "star feed"}
+            title={starTitleLabel(payload?.viewerHasStarred ?? false, language)}
             disabled={!canStar || starBusy || !payload}
             aria-pressed={payload?.viewerHasStarred ?? false}
             onClick={async () => {
@@ -1782,11 +1761,11 @@ function FeedPage(props: { username: string; slug: string }) {
             }}
           >
             <Star size={15} aria-hidden />
-            {payload?.viewerHasStarred ? "starred" : "star"} {payload?.briefing.stars ?? 0}
+            {starControlLabel(payload?.viewerHasStarred ?? false, language)} {payload?.briefing.stars ?? 0}
           </button>
         </div>
         <div className="feed-side-actions">
-          <button type="button" title="explore feeds" onClick={() => setExploreOpen(true)}><Compass size={15} aria-hidden /> Explore</button>
+          <button type="button" title={exploreFeedsLabel(language)} onClick={() => setExploreOpen(true)}><Compass size={15} aria-hidden /> {exploreControlLabel(language)}</button>
           <form
             className="search"
             onSubmit={async (event) => {
@@ -1796,11 +1775,17 @@ function FeedPage(props: { username: string; slug: string }) {
             }}
           >
             <Search size={15} aria-hidden />
-            <input aria-label="search published briefing" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="search published briefing" />
+            <input
+              aria-label={searchPublishedLabel(language)}
+              dir={pageDir}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={searchPublishedLabel(language)}
+            />
           </form>
         </div>
       </div>
-      {exploreOpen ? <ExploreFeedsSheet currentFeed={payload?.briefing} onClose={() => setExploreOpen(false)} /> : null}
+      {exploreOpen ? <ExploreFeedsSheet currentFeed={payload?.briefing} language={language} onClose={() => setExploreOpen(false)} /> : null}
       {reportEdition && reportSection ? (
         <ReportSheet
           edition={reportEdition}
@@ -1809,13 +1794,18 @@ function FeedPage(props: { username: string; slug: string }) {
           onClose={() => setSelectedReport(null)}
         />
       ) : null}
-      {error ? <FeedNotice message={error} /> : null}
-      {nextBriefingLabel && payload ? <p className="muted next-briefing">{nextBriefingText(payload.briefing.briefingCadence, nextBriefingLabel, language)}</p> : null}
+      {error ? <FeedNotice message={error} language={language} /> : null}
+      {feedStatusMessage ? (
+        <p className="muted feed-status-message" lang={language} dir={pageDir}>
+          <bdi dir={pageDir}>{feedStatusMessage}</bdi>
+        </p>
+      ) : null}
       <div className="news-line">
         {visibleUnreadEditions.map((edition) => (
           <FeedEditionRow
             key={edition.id}
             edition={edition}
+            detailEdition={editionDetails.get(edition.id) ?? (edition.sections.length > 0 ? edition : undefined)}
             language={language}
             isExpanded={expanded.has(edition.id)}
             isLoading={editionBusyIds.has(edition.id)}
@@ -1827,29 +1817,30 @@ function FeedPage(props: { username: string; slug: string }) {
         ))}
         {hiddenUnreadCount > 0 ? (
           <div className="load-more-row">
-            <button type="button" title="load more news" onClick={() => setVisibleUnreadCount((count) => count + FEED_BATCH_SIZE)}>
-              load more
+            <button type="button" title={loadMoreLabel(language)} onClick={() => setVisibleUnreadCount((count) => count + FEED_BATCH_SIZE)}>
+              {loadMoreLabel(language)}
             </button>
-            <span className="muted">{hiddenUnreadCount} more</span>
+            <span className="muted">{moreCountLabel(hiddenUnreadCount, language)}</span>
           </div>
         ) : null}
         {unreadEditions.length === 0 && !error ? (
           <div className="empty-state">
-            <strong>{archivedReadEditions.length > 0 ? "all visible briefings are read" : "no published briefings"}</strong>
+            <strong>{emptyFeedTitle(archivedReadEditions.length, language)}</strong>
             <p className="muted">
-              {archivedReadEditions.length > 0 ? "Open the read section below to revisit archived briefings." : "The next scheduled briefing will appear here."}
+              {emptyFeedMessage(archivedReadEditions.length, language)}
             </p>
           </div>
         ) : null}
       </div>
       {archivedReadEditions.length > 0 ? (
         <details className="section read-section">
-          <summary>read {archivedReadEditions.length}</summary>
+          <summary>{readSectionLabel(archivedReadEditions.length, language)}</summary>
           <div className="news-line news-line-read">
             {archivedReadEditions.map((edition) => (
               <FeedEditionRow
                 key={edition.id}
                 edition={edition}
+                detailEdition={editionDetails.get(edition.id) ?? (edition.sections.length > 0 ? edition : undefined)}
                 language={language}
                 isExpanded={expanded.has(edition.id)}
                 isLoading={editionBusyIds.has(edition.id)}
@@ -1868,6 +1859,7 @@ function FeedPage(props: { username: string; slug: string }) {
 
 function FeedEditionRow(props: {
   edition: BriefingEdition;
+  detailEdition?: BriefingEdition;
   language: "en" | "ar" | "fr";
   isExpanded: boolean;
   isLoading: boolean;
@@ -1877,38 +1869,55 @@ function FeedEditionRow(props: {
   onOpenReport: (sectionIndex: number) => void;
 }) {
   const textDir = textDirection(props.language);
-  const evidenceCount = props.edition.sections.reduce((count, section) => count + section.evidence.length, 0);
-  const referenceCount = Math.max(props.edition.sections.length, highestReferenceNumber(props.edition.summary));
+  const detailEdition = props.detailEdition ?? props.edition;
+  const surfaceSummary = surfaceBriefSummary(props.edition.summary);
+  const referenceCount = Math.max(detailEdition.sections.length, highestReferenceNumber(props.edition.summary));
+  const closedIcon = textDir === "rtl" ? <ChevronLeft size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />;
   return (
-    <article className="news-item">
-      <button
-        type="button"
-        className="read-button"
-        title={props.isRead ? "mark unread" : "mark read"}
-        aria-label={props.isRead ? `mark ${props.edition.title} unread` : `mark ${props.edition.title} read`}
-        onClick={props.onToggleRead}
-      >
-        {props.isRead ? "unread" : "read"}
-      </button>
-      <button type="button" className="expand" title="show briefing" aria-expanded={props.isExpanded} aria-label={`show ${props.edition.title}`} onClick={props.onToggleExpanded}>
-        {props.isExpanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />}
-      </button>
+    <article className={`news-item${props.isRead ? " is-read" : ""}`}>
+      <div className="news-rail" aria-hidden>
+        <span className="news-node" />
+      </div>
       <div className="news-copy" lang={props.language} dir={textDir}>
-        <div className="news-meta" dir="ltr">
-          <Timestamp value={props.edition.publishedAt} language={props.language} />
-          <span className="muted">{cadenceMetaLabel(props.edition.cadence, props.language)}</span>
-          {evidenceCount > 0 ? <span className="muted">{referenceLabel(evidenceCount, props.language)}</span> : null}
+        <div className="news-topline">
+          <div className="news-meta" dir={textDir}>
+            <Timestamp value={props.edition.publishedAt} language={props.language} />
+            <span className="muted">{cadenceMetaLabel(props.edition.cadence, props.language)}</span>
+          </div>
+          <div className="news-row-actions" dir="ltr">
+            <button
+              type="button"
+              className="read-button icon-button quiet-icon"
+              title={readToggleTitle(props.isRead, props.language)}
+              aria-label={readToggleAria(props.edition.title, props.isRead, props.language)}
+              onClick={props.onToggleRead}
+            >
+              {props.isRead ? <Circle size={16} aria-hidden /> : <CircleCheck size={16} aria-hidden />}
+              <span className="sr-only">{readToggleText(props.isRead, props.language)}</span>
+            </button>
+            <button
+              type="button"
+              className="expand icon-button quiet-icon"
+              title={briefingToggleTitle(props.isExpanded, props.language)}
+              aria-expanded={props.isExpanded}
+              aria-label={briefingToggleAria(props.edition.title, props.isExpanded, props.language)}
+              onClick={props.onToggleExpanded}
+            >
+              {props.isExpanded ? <ChevronDown size={15} aria-hidden /> : closedIcon}
+            </button>
+          </div>
         </div>
         <ReferenceParagraph
           className="news-summary"
-          text={props.edition.summary}
+          text={surfaceSummary}
           language={props.language}
           referenceCount={referenceCount}
           onOpenReference={props.onOpenReport}
         />
         {props.isExpanded ? (
           <EditionSections
-            edition={props.edition}
+            edition={detailEdition}
+            surfaceSummary={surfaceSummary}
             language={props.language}
             loading={props.isLoading}
             onOpenReport={props.onOpenReport}
@@ -1921,41 +1930,76 @@ function FeedEditionRow(props: {
 
 function EditionSections(props: {
   edition: BriefingEdition;
+  surfaceSummary: string;
   language: "en" | "ar" | "fr";
   loading: boolean;
   onOpenReport: (sectionIndex: number) => void;
 }) {
   const textDir = textDirection(props.language);
-  if (props.loading) return <p className="muted evidence-loading">loading briefing</p>;
-  if (props.edition.sections.length === 0) return <p className="muted evidence-loading">no briefing detail available</p>;
-  const referenceCount = props.edition.sections.reduce((count, section) => count + section.evidence.length, 0);
-  const narrative = editionNarrative(props.edition, props.language);
+  if (props.loading) return <p className="muted evidence-loading">{loadingBriefingLabel(props.language)}</p>;
+  if (props.edition.sections.length === 0) return <p className="muted evidence-loading">{noBriefingDetailLabel(props.language)}</p>;
+  const fullSummary = props.edition.summary.trim();
+  const showFullSummary = Boolean(fullSummary) && normalizeSummary(fullSummary) !== normalizeSummary(props.surfaceSummary);
+  const referenceCount = Math.max(props.edition.sections.length, highestReferenceNumber(props.edition.summary));
   return (
     <div className="brief-synthesis">
+      {showFullSummary ? (
+        <div className="full-brief-block">
+          <div className="brief-list-head">
+            <span>{fullBriefLabel(props.language)}</span>
+          </div>
+          <ReferenceParagraph
+            className="full-brief-summary"
+            text={fullSummary}
+            language={props.language}
+            referenceCount={referenceCount}
+            onOpenReference={props.onOpenReport}
+          />
+        </div>
+      ) : null}
       <div className="brief-list-head">
-        <span>{briefLabel(props.language)}</span>
-        {referenceCount > 0 ? <span className="muted">{referenceLabel(referenceCount, props.language)}</span> : null}
+        <span>{referencesLabel(props.language)}</span>
+        <span className="muted">{referenceLabel(props.edition.sections.length, props.language)}</span>
       </div>
-      <ReferenceParagraph
-        className="brief-synthesis-text"
-        text={narrative}
-        language={props.language}
-        referenceCount={props.edition.sections.length}
-        onOpenReference={props.onOpenReport}
-      />
-      <div className="brief-reference-strip" aria-label={referencesLabel(props.language)} dir={textDir}>
-        {props.edition.sections.map((section, sectionIndex) => (
-          <button
-            key={`${section.title}:${sectionIndex}`}
-            type="button"
-            className="brief-reference-button"
-            title={referenceButtonLabel(sectionIndex + 1, props.language)}
-            onClick={() => props.onOpenReport(sectionIndex)}
-          >
-            <span dir="ltr">[{sectionIndex + 1}]</span>
-            <bdi>{referencePreview(section)}</bdi>
-          </button>
-        ))}
+      <div className="reference-digest-list" aria-label={referencesLabel(props.language)} dir={textDir}>
+        {props.edition.sections.map((section, sectionIndex) => {
+          const timeRange = referenceTimeRange(section.evidence, props.language);
+          return (
+            <article
+              key={`${section.title}:${sectionIndex}`}
+              className="reference-digest-row"
+            >
+              <button
+                type="button"
+                className="reference-digest-index"
+                title={referenceButtonLabel(sectionIndex + 1, props.language)}
+                aria-label={referenceButtonLabel(sectionIndex + 1, props.language)}
+                onClick={() => props.onOpenReport(sectionIndex)}
+              >
+                <span dir="ltr">[{sectionIndex + 1}]</span>
+              </button>
+              <div className="reference-digest-copy">
+                <div className="reference-digest-meta" dir="ltr">
+                  <bdi>{referencePreview(section)}</bdi>
+                  {timeRange ? <span>{timeRange}</span> : null}
+                  {section.evidence.length > 0 ? <span>{referenceLabel(section.evidence.length, props.language)}</span> : null}
+                </div>
+                <p className="reference-digest-summary" dir={textDir}>
+                  <bdi dir={textDir}>{referenceDigestSummary(section.summary)}</bdi>
+                </p>
+              </div>
+              <button
+                type="button"
+                className="reference-digest-action"
+                title={openReportLabel(sectionIndex + 1, props.language)}
+                onClick={() => props.onOpenReport(sectionIndex)}
+              >
+                <ExternalLink size={14} aria-hidden />
+                {reportLabel(props.language)}
+              </button>
+            </article>
+          );
+        })}
       </div>
     </div>
   );
@@ -2046,10 +2090,10 @@ function ReportEvidenceRow(props: { entry: BriefingEvidence; language: "en" | "a
         {props.entry.media.map((media, index) =>
           media.url ? (
             <a key={`${media.url}-${index}`} href={media.url} target="_blank" rel="noreferrer">
-              <ExternalLink size={14} aria-hidden /> {media.label ?? media.type}
+              <ExternalLink size={14} aria-hidden /> {mediaDisplayLabel(media, props.language)}
             </a>
           ) : (
-            <span key={`${media.fileId}-${index}`} className="muted">{media.label ?? media.type}</span>
+            <span key={`${media.fileId}-${index}`} className="muted">{mediaDisplayLabel(media, props.language)}</span>
           )
         )}
       </div>
@@ -2063,7 +2107,7 @@ function ReportEvidenceRow(props: { entry: BriefingEvidence; language: "en" | "a
 
 function Timestamp(props: { value: string; language: "en" | "ar" | "fr" }) {
   const label = formatTime(props.value, props.language);
-  return <time dateTime={props.value} dir="ltr">{label}</time>;
+  return <time dateTime={props.value} dir={textDirection(props.language)}>{label}</time>;
 }
 
 function StatusLine(props: { label: string; value: React.ReactNode; valueDir?: "ltr" | "rtl" }) {
@@ -2078,10 +2122,10 @@ function StatusLine(props: { label: string; value: React.ReactNode; valueDir?: "
   );
 }
 
-function FeedNotice(props: { message: string }) {
+function FeedNotice(props: { message: string; language: "en" | "ar" | "fr" }) {
   return (
     <section className="section notice">
-      <h2>feed unavailable</h2>
+      <h2>{feedUnavailableLabel(props.language)}</h2>
       <p>{props.message}</p>
     </section>
   );
@@ -2099,6 +2143,7 @@ function Shell(props: {
 }) {
   const [theme, setTheme] = useState(() => (localStorage.getItem("dn_theme") === "dark" ? "dark" : "light"));
   const titleText = props.titleText ?? (typeof props.title === "string" ? props.title : "briefing");
+  const shellLanguage = props.pageLanguage ?? "en";
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("dn_theme", theme);
@@ -2106,6 +2151,7 @@ function Shell(props: {
 
   useEffect(() => {
     document.documentElement.lang = props.pageLanguage ?? "en";
+    document.documentElement.dir = textDirection(props.pageLanguage ?? "en");
     document.title = titleText === "Distilled.news" ? "Distilled.news" : `${titleText} · Distilled.news`;
     const manifest = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
     if (manifest) {
@@ -2130,9 +2176,9 @@ function Shell(props: {
         </div>
         <div className="header-actions">
           <nav>
-            <a href="/" title="create">create</a>
+            <a href="/" title={createNavLabel(shellLanguage)}>{createNavLabel(shellLanguage)}</a>
             {props.feed ? <span className="nav-separator" aria-hidden="true">|</span> : null}
-            {props.feed ? <a href={`/${props.feed.ownerUsername}/${props.feed.slug}/`}>feed</a> : null}
+            {props.feed ? <a href={`/${props.feed.ownerUsername}/${props.feed.slug}/`}>{feedNavLabel(shellLanguage)}</a> : null}
           </nav>
           <div className="header-controls">
             {props.onAccount ? (
@@ -2165,6 +2211,18 @@ function getPageMeta(title: string): string {
   return "Self-hosted news filtering.";
 }
 
+function createNavLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "إنشاء";
+  if (language === "fr") return "créer";
+  return "create";
+}
+
+function feedNavLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "الموجز";
+  if (language === "fr") return "fil";
+  return "feed";
+}
+
 function updateBriefingList(current: BriefingConfig[], next: BriefingConfig): BriefingConfig[] {
   const exists = current.some((item) => item.id === next.id);
   if (!exists) return [...current, next];
@@ -2191,6 +2249,10 @@ function createBriefingDraft(existing: BriefingConfig[], account: AccountRecord)
     retentionDays: 15,
     stars: 0
   };
+}
+
+function visibleBriefingCadence(cadence: BriefingConfig["briefingCadence"]): Exclude<BriefingConfig["briefingCadence"], "monthly"> {
+  return cadence === "monthly" ? "weekly" : cadence;
 }
 
 function toggleSetValue(
@@ -2267,6 +2329,162 @@ function textDirection(language: "en" | "ar" | "fr"): "ltr" | "rtl" {
   return language === "ar" ? "rtl" : "ltr";
 }
 
+function bylineLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "بواسطة";
+  if (language === "fr") return "par";
+  return "by";
+}
+
+function loadingFeedLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "جار تحميل الموجز";
+  if (language === "fr") return "chargement du fil";
+  return "loading feed";
+}
+
+function refreshControlLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "تحديث";
+  if (language === "fr") return "actualiser";
+  return "refresh";
+}
+
+function starControlLabel(starred: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return starred ? "مميّز" : "تمييز";
+  if (language === "fr") return starred ? "favori" : "favoriser";
+  return starred ? "starred" : "star";
+}
+
+function starTitleLabel(starred: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return starred ? "إزالة التمييز" : "تمييز الموجز";
+  if (language === "fr") return starred ? "retirer le favori" : "favoriser le fil";
+  return starred ? "remove star" : "star feed";
+}
+
+function exploreControlLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "استكشاف";
+  if (language === "fr") return "Explorer";
+  return "Explore";
+}
+
+function exploreFeedsLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "استكشاف الموجزات";
+  if (language === "fr") return "explorer les fils";
+  return "explore feeds";
+}
+
+function closeExploreLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "إغلاق الاستكشاف";
+  if (language === "fr") return "fermer l'exploration";
+  return "close explore";
+}
+
+function loadingFeedsLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "جار تحميل الموجزات";
+  if (language === "fr") return "chargement des fils";
+  return "loading feeds";
+}
+
+function noStarredFeedsLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "لا توجد موجزات مميّزة بعد";
+  if (language === "fr") return "aucun fil favori pour l'instant";
+  return "no starred feeds yet";
+}
+
+function searchPublishedLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "ابحث في الموجز المنشور";
+  if (language === "fr") return "chercher dans le brief publié";
+  return "search published briefing";
+}
+
+function loadMoreLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "عرض المزيد";
+  if (language === "fr") return "afficher plus";
+  return "load more";
+}
+
+function moreCountLabel(count: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return `${count} إضافية`;
+  if (language === "fr") return `${count} de plus`;
+  return `${count} more`;
+}
+
+function emptyFeedTitle(readCount: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return readCount > 0 ? "كل الموجزات الظاهرة مقروءة" : "لا توجد موجزات منشورة";
+  if (language === "fr") return readCount > 0 ? "tous les briefs visibles sont lus" : "aucun brief publié";
+  return readCount > 0 ? "all visible briefings are read" : "no published briefings";
+}
+
+function emptyFeedMessage(readCount: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return readCount > 0 ? "افتح قسم المقروء للعودة إلى الموجزات السابقة." : "سيظهر الموجز المجدول التالي هنا.";
+  if (language === "fr") return readCount > 0 ? "Ouvrez la section lue pour revoir les anciens briefs." : "Le prochain brief programmé apparaîtra ici.";
+  return readCount > 0 ? "Open the read section below to revisit archived briefings." : "The next scheduled briefing will appear here.";
+}
+
+function readSectionLabel(count: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return `مقروء ${count}`;
+  if (language === "fr") return `lus ${count}`;
+  return `read ${count}`;
+}
+
+function readToggleText(isRead: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return isRead ? "غير مقروء" : "مقروء";
+  if (language === "fr") return isRead ? "non lu" : "lu";
+  return isRead ? "unread" : "read";
+}
+
+function readToggleTitle(isRead: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return isRead ? "وضع كغير مقروء" : "وضع كمقروء";
+  if (language === "fr") return isRead ? "marquer non lu" : "marquer lu";
+  return isRead ? "mark unread" : "mark read";
+}
+
+function readToggleAria(title: string, isRead: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return isRead ? `وضع ${title} كغير مقروء` : `وضع ${title} كمقروء`;
+  if (language === "fr") return isRead ? `marquer ${title} non lu` : `marquer ${title} lu`;
+  return isRead ? `mark ${title} unread` : `mark ${title} read`;
+}
+
+function briefingToggleTitle(isExpanded: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return isExpanded ? "إخفاء الموجز" : "عرض الموجز";
+  if (language === "fr") return isExpanded ? "masquer le brief" : "afficher le brief";
+  return isExpanded ? "hide briefing" : "show briefing";
+}
+
+function briefingToggleAria(title: string, isExpanded: boolean, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return isExpanded ? `إخفاء ${title}` : `عرض ${title}`;
+  if (language === "fr") return isExpanded ? `masquer ${title}` : `afficher ${title}`;
+  return isExpanded ? `hide ${title}` : `show ${title}`;
+}
+
+function loadingBriefingLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "جار تحميل الموجز";
+  if (language === "fr") return "chargement du brief";
+  return "loading briefing";
+}
+
+function noBriefingDetailLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "لا توجد تفاصيل لهذا الموجز";
+  if (language === "fr") return "aucun détail disponible";
+  return "no briefing detail available";
+}
+
+function feedUnavailableLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "الموجز غير متاح";
+  if (language === "fr") return "fil indisponible";
+  return "feed unavailable";
+}
+
+function fullBriefLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "الموجز الكامل";
+  if (language === "fr") return "brief complet";
+  return "full brief";
+}
+
+function pausedScheduleLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "متوقف مؤقتاً";
+  if (language === "fr") return "en pause";
+  return "paused";
+}
+
 function formatAutosaveStatus(state: "idle" | "saving" | "saved" | "error", status: string): string {
   if (state === "saving") return "saving";
   if (state === "saved") return "saved";
@@ -2301,6 +2519,31 @@ function formatCountdown(isoDate: string, nowMs: number, language: "en" | "ar" |
   return `in ${days}d`;
 }
 
+function feedStatusText(briefing: PublicBriefing, nowMs: number, language: "en" | "ar" | "fr"): string {
+  if (briefing.paused) return pausedFeedMessage(language);
+  if (!briefing.nextBriefingAt) return "";
+  const nextAt = new Date(briefing.nextBriefingAt).getTime();
+  if (!Number.isFinite(nextAt)) return "";
+  if (nextAt <= nowMs) return awaitingAcceptedBriefMessage(briefing.briefingCadence, language);
+  const countdown = formatCountdown(briefing.nextBriefingAt, nowMs, language);
+  return countdown ? nextBriefingText(briefing.briefingCadence, countdown, language) : "";
+}
+
+function pausedFeedMessage(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "الموجز متوقف مؤقتاً؛ لن تُنشر موجزات جديدة حتى يُستأنف.";
+  if (language === "fr") return "fil en pause; aucun nouveau brief ne sera publié avant reprise.";
+  return "feed paused; no new briefings will publish until it resumes.";
+}
+
+function awaitingAcceptedBriefMessage(
+  cadence: BriefingConfig["briefingCadence"],
+  language: "en" | "ar" | "fr"
+): string {
+  if (language === "ar") return `بانتظار الموجز المقبول التالي (${cadenceMetaLabel(cadence, language)}).`;
+  if (language === "fr") return `en attente du prochain brief ${cadenceMetaLabel(cadence, language)} accepté.`;
+  return `waiting for the next accepted ${cadence} brief.`;
+}
+
 function uniqueSourceTitles(evidence: BriefingEvidence[]): string[] {
   const titles: string[] = [];
   const seen = new Set<string>();
@@ -2314,19 +2557,46 @@ function uniqueSourceTitles(evidence: BriefingEvidence[]): string[] {
   return titles;
 }
 
-function editionNarrative(edition: BriefingEdition, language: "en" | "ar" | "fr"): string {
-  if (highestReferenceNumber(edition.summary) > 0) return edition.summary;
-  const sectionsWithSummaries = edition.sections.filter((section) => section.summary.trim());
-  if (sectionsWithSummaries.length === 0) return edition.summary;
-  return synthesizeEditionNarrativeSummary(sectionsWithSummaries, edition.cadence, language);
-}
-
 function referencePreview(section: BriefingEditionSection): string {
   const sources = uniqueSourceTitles(section.evidence);
   if (sources.length === 0) return section.title;
   const visible = sources.slice(0, 2).join(", ");
   const hidden = sources.length - 2;
   return hidden > 0 ? `${visible} +${hidden}` : visible;
+}
+
+function referenceTimeRange(evidence: BriefingEvidence[], language: "en" | "ar" | "fr"): string {
+  const times = evidence
+    .map((entry) => entry.postedAt)
+    .filter(Boolean)
+    .sort();
+  if (times.length === 0) return "";
+  const first = formatTime(times[0], language);
+  const last = formatTime(times[times.length - 1], language);
+  return first === last ? first : `${first} - ${last}`;
+}
+
+function referenceDigestSummary(summary: string): string {
+  const words = summary.trim().split(/\s+/u).filter(Boolean);
+  if (words.length <= 34) return summary;
+  return `${words.slice(0, 34).join(" ").replace(/[,.،;:]+$/u, "")}...`;
+}
+
+function surfaceBriefSummary(summary: string): string {
+  const sentences = summarySentences(summary);
+  if (sentences.length <= 2) return normalizeSummary(summary);
+  return normalizeSummary(sentences.slice(0, 2).join(" "));
+}
+
+function summarySentences(summary: string): string[] {
+  const normalized = normalizeSummary(summary);
+  if (!normalized) return [];
+  const matches = normalized.match(/[^.!؟?]+(?:[.!؟?]+|$)/gu) ?? [normalized];
+  return matches.map((sentence) => sentence.trim()).filter(Boolean);
+}
+
+function normalizeSummary(summary: string): string {
+  return summary.trim().replace(/\s+/gu, " ");
 }
 
 function highestReferenceNumber(text: string): number {
@@ -2351,12 +2621,6 @@ function referenceTextParts(text: string): Array<{ kind: "text"; value: string }
   return parts;
 }
 
-function briefLabel(language: "en" | "ar" | "fr"): string {
-  if (language === "ar") return "الموجز";
-  if (language === "fr") return "brief";
-  return "brief";
-}
-
 function referencesLabel(language: "en" | "ar" | "fr"): string {
   if (language === "ar") return "المراجع";
   if (language === "fr") return "références";
@@ -2367,6 +2631,12 @@ function referenceButtonLabel(referenceNumber: number, language: "en" | "ar" | "
   if (language === "ar") return `فتح المرجع ${referenceNumber}`;
   if (language === "fr") return `ouvrir la référence ${referenceNumber}`;
   return `open reference ${referenceNumber}`;
+}
+
+function openReportLabel(referenceNumber: number, language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return `فتح تقرير المرجع ${referenceNumber}`;
+  if (language === "fr") return `ouvrir le rapport de la référence ${referenceNumber}`;
+  return `open reference ${referenceNumber} report`;
 }
 
 function reportLabel(language: "en" | "ar" | "fr"): string {
@@ -2437,6 +2707,30 @@ function sourceTextLabel(language: "en" | "ar" | "fr"): string {
   return "source text";
 }
 
+function mediaDisplayLabel(media: BriefingEvidence["media"][number], language: "en" | "ar" | "fr"): string {
+  const generatedTelegramLabel = /^telegram\s+/i.test(media.label ?? "");
+  if (media.label && !generatedTelegramLabel) return media.label;
+  if (language === "ar") {
+    if (media.type === "photo") return "صورة";
+    if (media.type === "video") return "فيديو";
+    if (media.type === "document") return "مستند";
+    if (media.type === "animation") return "رسوم متحركة";
+    if (media.type === "audio") return "صوت";
+    if (media.type === "voice") return "رسالة صوتية";
+    return "وسائط";
+  }
+  if (language === "fr") {
+    if (media.type === "photo") return "photo";
+    if (media.type === "video") return "vidéo";
+    if (media.type === "document") return "document";
+    if (media.type === "animation") return "animation";
+    if (media.type === "audio") return "audio";
+    if (media.type === "voice") return "message vocal";
+    return "média";
+  }
+  return media.label ?? media.type;
+}
+
 function onboardingStorageKey(accountId: string): string {
   return `ln_onboarding:${accountId}`;
 }
@@ -2459,8 +2753,9 @@ function prepareBriefingForSave(briefing: BriefingConfig, existing: BriefingConf
     ...briefing,
     slug: slugify(nextSlug),
     publicFeedEnabled: true,
-    briefingCadence: briefing.briefingCadence ?? "hourly",
-    briefingTimeOfDay: briefing.briefingTimeOfDay ?? "00:00",
+    intensity: briefing.intensity ?? "medium",
+    briefingCadence: visibleBriefingCadence(briefing.briefingCadence ?? "hourly"),
+    briefingTimeOfDay: "00:00",
     briefingTimezone: briefing.briefingTimezone ?? "UTC",
     retentionDays: 15
   };

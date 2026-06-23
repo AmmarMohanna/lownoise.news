@@ -1,4 +1,5 @@
 import { createApp } from "./app";
+import { createSummaryAdapterFromEnv } from "./ai";
 import { publishDueBriefingEditions } from "./editions";
 import { D1Repository } from "./repository";
 import { pollApifySourceRuns, refreshEnabledSources } from "./sources";
@@ -57,7 +58,8 @@ async function refreshEnabledPublicSources(env: Env): Promise<void> {
     await publishDueBriefingEditions({
       repo,
       briefings: await repo.listBriefings(),
-      now: new Date()
+      now: new Date(),
+      summaryAdapter: createSummaryAdapterFromEnv(env, repo)
     });
   } catch (error) {
     console.error("Could not publish briefing editions", error);

@@ -64,6 +64,39 @@ const edition = {
   updatedAt: "2026-06-16T08:02:00.000Z"
 };
 
+const publicSurfaceEdition = {
+  ...edition,
+  summary:
+    "Electricite du Liban confirmed two extra hours of power supply tonight [1]. Municipal crews said the change applies before midnight [1]. A third operational note stays in the full brief [1].",
+  sections: [
+    {
+      title: "Infrastructure",
+      summary:
+        "Electricite du Liban confirmed two extra hours of power supply tonight. Municipal crews said the change applies before midnight. A third operational note stays in the full brief.",
+      evidence: item.evidence
+    }
+  ]
+};
+
+const arabicBriefing = {
+  ...briefing,
+  title: "أخبار لبنان",
+  language: "ar"
+};
+
+const arabicEdition = {
+  ...edition,
+  title: "موجز الساعة",
+  summary: "في هذه الساعة: أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة [1].",
+  sections: [
+    {
+      title: "بنية تحتية",
+      summary: "أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة.",
+      evidence: item.evidence
+    }
+  ]
+};
+
 const feedEditions = Array.from({ length: 25 }, (_, index) => ({
   ...edition,
   id: `edition_${index + 1}`,
@@ -172,16 +205,16 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
       contentType: "application/json",
       body: JSON.stringify({
         briefing: { ...briefing, paused: feedPaused },
-        editions: [{ ...edition, sections: [] }],
+        editions: [{ ...publicSurfaceEdition, sections: [] }],
         viewerHasStarred: false
       })
     });
   });
   await page.route("**/api/feed/ammar-mohanna/personal/editions/edition_1", async (route) => {
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ edition }) });
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ edition: publicSurfaceEdition }) });
   });
   await page.route("**/api/feed/ammar-mohanna/personal/search?q=power%20supply", async (route) => {
-    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ editions: [edition] }) });
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ editions: [publicSurfaceEdition] }) });
   });
   await page.route("**/api/explore/feeds", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ feeds: exploreFeeds }) });
@@ -192,19 +225,26 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await expect(page.getByRole("link", { name: "Distilled.news" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Personal Briefing" })).toBeVisible();
   await expect(page.locator(".page-heading .status-dot.live")).toBeVisible();
+  await expect(page.getByText("waiting for the next accepted hourly brief.")).toBeVisible();
   feedPaused = true;
   await page.getByRole("button", { name: /^refresh$/i }).click();
   await expect(page.locator(".page-heading .status-dot.paused")).toBeVisible();
+  await expect(page.getByText("feed paused; no new briefings will publish until it resumes.")).toBeVisible();
+  await expect(page.getByText(/is due/i)).toHaveCount(0);
   await expect(page.getByText("by ammar-mohanna")).toBeVisible();
   await expect(page.getByRole("button", { name: /refresh/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /explore/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /explore/i })).toHaveAttribute("title", "explore feeds");
   expect(sessionRequests).toBe(0);
   await expect(page.getByPlaceholder("search published briefing")).toBeVisible();
-  await expect(page.locator(".news-item").filter({ hasText: item.summary }).first()).toBeVisible();
+  await expect(page.locator(".news-item").filter({ hasText: "Electricite du Liban confirmed two extra hours" }).first()).toBeVisible();
+  await expect(page.getByText("A third operational note stays in the full brief")).toHaveCount(0);
   await expect(page.getByText(/confidence|source count|breaking/i)).toHaveCount(0);
 
   await page.getByRole("button", { name: /show .*brief/i }).first().click();
+  await expect(page.getByText("A third operational note stays in the full brief").first()).toBeVisible();
+  await expect(page.locator(".reference-digest-row").first()).toBeVisible();
+  await expect(page.locator(".brief-synthesis-text")).toHaveCount(0);
   await page.getByRole("button", { name: /open reference 1/i }).first().click();
   const reportDialog = page.getByRole("dialog", { name: "report" });
   await expect(reportDialog).toBeVisible();
@@ -214,12 +254,47 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
 
   await page.getByPlaceholder("search published briefing").fill("power supply");
   await page.keyboard.press("Enter");
-  await expect(page.locator(".news-item").filter({ hasText: item.summary }).first()).toBeVisible();
+  await expect(page.locator(".news-item").filter({ hasText: "Electricite du Liban confirmed two extra hours" }).first()).toBeVisible();
 
   await page.getByRole("button", { name: /explore/i }).click();
   await expect(page.getByRole("dialog", { name: "explore" })).toBeVisible();
   await expect(page.getByRole("link", { name: /City Watch/ })).toHaveAttribute("href", "/city-user/city-watch/");
   expect(sessionRequests).toBe(0);
+});
+
+test("arabic feed keeps public chrome localized and summary stable on expand", async ({ page }) => {
+  await page.route("**/api/feed/ammar-mohanna/personal", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        briefing: arabicBriefing,
+        editions: [{ ...arabicEdition, sections: [] }],
+        viewerHasStarred: false
+      })
+    });
+  });
+  await page.route("**/api/feed/ammar-mohanna/personal/editions/edition_1", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ edition: arabicEdition }) });
+  });
+  await page.route("**/api/explore/feeds", async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ feeds: [] }) });
+  });
+
+  await page.goto("/ammar-mohanna/personal/");
+
+  await expect(page.getByRole("button", { name: /^تحديث$/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /استكشاف/ })).toBeVisible();
+  await expect(page.getByPlaceholder("ابحث في الموجز المنشور")).toBeVisible();
+  await expect(page.getByText("بواسطة ammar-mohanna")).toBeVisible();
+  await expect(page.getByText("في هذه الساعة: أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة").first()).toBeVisible();
+
+  await page.getByRole("button", { name: /عرض موجز الساعة/i }).click();
+  await expect(page.getByText("في هذه الساعة: أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة").first()).toBeVisible();
+  await expect(page.locator(".news-summary").filter({ hasText: "في هذه الساعة" })).toHaveCount(1);
+  await expect(page.getByText("المراجع")).toBeVisible();
+  await expect(page.getByText("refresh")).toHaveCount(0);
+  await expect(page.getByText("Explore")).toHaveCount(0);
+  await expect(page.getByText("search published briefing")).toHaveCount(0);
 });
 
 test("feed shows twenty unread items and backfills when one is read", async ({ page }) => {
@@ -347,6 +422,12 @@ test("admin setup keeps account settings tucked behind subtle controls", async (
   await page.getByRole("button", { name: "feed settings for Personal Briefing" }).click();
   await expect(page.getByRole("dialog", { name: "feed settings" })).toBeVisible();
   await expect(page.getByLabel("interest profile")).toBeVisible();
+  const feedSettingsDialog = page.getByRole("dialog", { name: "feed settings" });
+  await expect(feedSettingsDialog.getByText("intensity")).toHaveCount(0);
+  await expect(feedSettingsDialog.getByLabel("feed intensity")).toHaveCount(0);
+  await expect(feedSettingsDialog.getByText("briefing time")).toHaveCount(0);
+  await expect(feedSettingsDialog.getByText("monthly")).toHaveCount(0);
+  await expect(feedSettingsDialog.getByRole("button", { name: "weekly" })).toBeVisible();
   await expect(page.getByLabel("public feed")).toHaveCount(0);
   await expect(page.getByText("retention days")).toHaveCount(0);
   await page.getByLabel("title").fill("Local Briefing");

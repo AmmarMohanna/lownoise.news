@@ -6,7 +6,7 @@ import { processQueueMessage } from "./processor";
 import { ingestPublicTelegramChannel } from "./publicTelegram";
 import { InMemoryRepository } from "./repository";
 import { pollApifySourceRuns } from "./sources";
-import type { BriefingEdition, BriefingItem, EventReviewAdapter, NormalizedMessage } from "@distilled/core";
+import type { BriefingEdition, BriefingItem, EventReviewAdapter, NormalizedMessage, SummaryAdapter } from "@distilled/core";
 import type { Env, ProcessingJobMessage } from "./types";
 
 class FakeBucket {
@@ -382,7 +382,68 @@ describe("worker app accounts", () => {
     expect(oldRoute.status).toBe(404);
   });
 
-  it("saves and reloads feed briefing cadence", async () => {
+  it("advances scheduled windows without publishing empty feed rows", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    const published = await publishDueBriefingEditions({
+      repo,
+      briefings: [{ ...briefing!, nextBriefingAt: "2026-06-16T09:00:00.000Z" }],
+      now: new Date("2026-06-16T09:00:00.000Z")
+    });
+
+    expect(published).toBe(0);
+    expect(await repo.listBriefingEditions(briefing!.id, true)).toEqual([]);
+    const saved = await repo.getBriefingById(briefing!.id);
+    expect(saved?.nextBriefingAt).toBe("2026-06-16T10:00:00.000Z");
+  });
+
+  it("hides existing empty editions from public feed and search", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    await repo.saveBriefingEdition({
+      id: "edition_empty",
+      briefingId: briefing!.id,
+      cadence: "hourly",
+      windowStart: "2026-06-16T07:00:00.000Z",
+      windowEnd: "2026-06-16T08:00:00.000Z",
+      title: "Hourly brief",
+      summary: "No verified updates in this hourly brief.",
+      sections: [
+        {
+          title: "No updates",
+          summary: "No verified updates in this hourly brief.",
+          evidence: []
+        }
+      ],
+      status: "empty",
+      publishedAt: "2026-06-16T08:00:00.000Z",
+      createdAt: "2026-06-16T08:00:00.000Z",
+      updatedAt: "2026-06-16T08:00:00.000Z"
+    });
+
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
+    expect(feedResponse.status).toBe(200);
+    const feed = (await feedResponse.json()) as { editions: unknown[] };
+    expect(feed.editions).toEqual([]);
+
+    const detailResponse = await app.request("/api/feed/feed-owner/personal/editions/edition_empty", {}, env());
+    expect(detailResponse.status).toBe(404);
+
+    const searchResponse = await app.request("/api/feed/feed-owner/personal/search?q=verified", {}, env());
+    expect(searchResponse.status).toBe(200);
+    const search = (await searchResponse.json()) as { editions: unknown[] };
+    expect(search.editions).toEqual([]);
+  });
+
+  it("saves supported feed cadence while keeping briefing time internal", async () => {
     const repo = new InMemoryRepository();
     const app = createApp({ repository: repo });
     const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
@@ -410,9 +471,215 @@ describe("worker app accounts", () => {
       briefings: Array<{ briefingCadence: string; briefingTimeOfDay: string; briefingTimezone: string; nextBriefingAt?: string }>;
     };
     expect(payload.briefings[0].briefingCadence).toBe("daily");
-    expect(payload.briefings[0].briefingTimeOfDay).toBe("08:30");
+    expect(payload.briefings[0].briefingTimeOfDay).toBe("00:00");
     expect(payload.briefings[0].briefingTimezone).toBe("Asia/Beirut");
     expect(payload.briefings[0].nextBriefingAt).toBeTruthy();
+  });
+
+  it("normalizes monthly cadence to weekly", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    const saveResponse = await app.request(
+      "/api/me/briefings",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: user.cookie },
+        body: JSON.stringify({
+          ...briefing!,
+          briefingCadence: "monthly",
+          briefingTimeOfDay: "08:30"
+        })
+      },
+      env()
+    );
+    expect(saveResponse.status).toBe(200);
+    const payload = (await saveResponse.json()) as {
+      briefing: { briefingCadence: string; briefingTimeOfDay: string };
+    };
+    expect(payload.briefing.briefingCadence).toBe("weekly");
+    expect(payload.briefing.briefingTimeOfDay).toBe("00:00");
+  });
+
+  it("serves synthesized public summaries for old count-style edition rows", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    await repo.saveBriefingEdition({
+      id: "edition_count_summary",
+      briefingId: briefing!.id,
+      cadence: "hourly",
+      windowStart: "2026-06-16T07:00:00.000Z",
+      windowEnd: "2026-06-16T08:00:00.000Z",
+      title: "Hourly brief",
+      summary: "2 updates in this hourly brief.",
+      sections: [
+        {
+          title: "Infrastructure",
+          summary: "Electricite du Liban confirmed two extra hours of power supply tonight.",
+          evidence: []
+        },
+        {
+          title: "Security",
+          summary: "The coastal road reopened after an overnight security closure.",
+          evidence: []
+        }
+      ],
+      status: "published",
+      publishedAt: "2026-06-16T08:00:00.000Z",
+      createdAt: "2026-06-16T08:00:00.000Z",
+      updatedAt: "2026-06-16T08:00:00.000Z"
+    });
+
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
+    expect(feedResponse.status).toBe(200);
+    const feed = (await feedResponse.json()) as { editions: Array<{ summary: string; sections: unknown[] }> };
+    expect(feed.editions[0].summary).toContain("This hour:");
+    expect(feed.editions[0].summary).toContain("[1]");
+    expect(feed.editions[0].summary).not.toContain("2 updates in this hourly brief");
+    expect(feed.editions[0].sections).toEqual([]);
+
+    const detailResponse = await app.request("/api/feed/feed-owner/personal/editions/edition_count_summary", {}, env());
+    expect(detailResponse.status).toBe(200);
+    const detail = (await detailResponse.json()) as { edition: { summary: string; sections: unknown[] } };
+    expect(detail.edition.summary).toBe(feed.editions[0].summary);
+    expect(detail.edition.sections).toHaveLength(2);
+  });
+
+  it("uses the summary adapter to localize scheduled Arabic edition sections", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    await repo.upsertBriefing({
+      ...briefing!,
+      language: "ar",
+      interestProfile: "Track Lebanese infrastructure and power supply updates."
+    });
+    const savedBriefing = await repo.getBriefingById(briefing!.id);
+    expect(savedBriefing).not.toBeNull();
+
+    const message: NormalizedMessage = {
+      id: `${briefing!.id}::english_power_update`,
+      source: { id: "src_power", title: "Power Wire", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "english-power-update",
+      text: "Electricite du Liban announced two extra hours of power supply tonight.",
+      links: [],
+      media: [],
+      postedAt: "2026-06-16T08:15:00.000Z",
+      receivedAt: "2026-06-16T08:15:10.000Z",
+      sourceUrl: "https://t.me/power/1",
+      expiresAt: "2026-07-01T08:15:00.000Z"
+    };
+    await repo.saveRawMessage(briefing!.id, message);
+    const summarize = vi.fn(async () => "أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة.");
+    const summaryAdapter: SummaryAdapter = { summarize };
+
+    await publishDueBriefingEditions({
+      repo,
+      briefings: [{ ...savedBriefing!, nextBriefingAt: "2026-06-16T09:00:00.000Z" }],
+      now: new Date("2026-06-16T09:00:00.000Z"),
+      summaryAdapter
+    });
+
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
+    expect(feedResponse.status).toBe(200);
+    const feed = (await feedResponse.json()) as { editions: Array<{ id: string; summary: string }> };
+    expect(feed.editions[0].summary).toContain("في هذه الساعة:");
+    expect(feed.editions[0].summary).toContain("أعلنت كهرباء لبنان");
+    expect(feed.editions[0].summary).not.toContain("Electricite du Liban");
+
+    const editionResponse = await app.request(`/api/feed/feed-owner/personal/editions/${feed.editions[0].id}`, {}, env());
+    expect(editionResponse.status).toBe(200);
+    const edition = (await editionResponse.json()) as { edition: { sections: Array<{ title: string; summary: string }> } };
+    expect(edition.edition.sections[0].title).toBe("بنية تحتية");
+    expect(edition.edition.sections[0].summary).toBe("أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة.");
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes old Arabic section titles in public edition detail", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    await repo.upsertBriefing({ ...briefing!, language: "ar" });
+
+    await repo.saveBriefingEdition({
+      id: "edition_old_arabic_title",
+      briefingId: briefing!.id,
+      cadence: "hourly",
+      windowStart: "2026-06-16T07:00:00.000Z",
+      windowEnd: "2026-06-16T08:00:00.000Z",
+      title: "Hourly brief",
+      summary: "في هذه الساعة: أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة [1].",
+      sections: [
+        {
+          title: "Infrastructure",
+          summary: "أعلنت كهرباء لبنان زيادة التغذية ساعتين هذه الليلة.",
+          evidence: []
+        }
+      ],
+      status: "published",
+      publishedAt: "2026-06-16T08:00:00.000Z",
+      createdAt: "2026-06-16T08:00:00.000Z",
+      updatedAt: "2026-06-16T08:00:00.000Z"
+    });
+
+    const editionResponse = await app.request("/api/feed/feed-owner/personal/editions/edition_old_arabic_title", {}, env());
+    expect(editionResponse.status).toBe(200);
+    const detail = (await editionResponse.json()) as { edition: { sections: Array<{ title: string; summary: string }> } };
+    expect(detail.edition.sections[0].title).toBe("بنية تحتية");
+    expect(detail.edition.sections[0].summary).not.toContain("Infrastructure");
+  });
+
+  it("does not publish wrong-language Arabic editions when localization is unavailable", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    await repo.upsertBriefing({
+      ...briefing!,
+      language: "ar",
+      interestProfile: "Track Lebanese infrastructure and power supply updates."
+    });
+    const savedBriefing = await repo.getBriefingById(briefing!.id);
+    expect(savedBriefing).not.toBeNull();
+
+    await repo.saveRawMessage(briefing!.id, {
+      id: `${briefing!.id}::english_power_update`,
+      source: { id: "src_power", title: "Power Wire", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "english-power-update",
+      text: "Electricite du Liban announced two extra hours of power supply tonight.",
+      links: [],
+      media: [],
+      postedAt: "2026-06-16T08:15:00.000Z",
+      receivedAt: "2026-06-16T08:15:10.000Z",
+      sourceUrl: "https://t.me/power/1",
+      expiresAt: "2026-07-01T08:15:00.000Z"
+    });
+
+    await publishDueBriefingEditions({
+      repo,
+      briefings: [{ ...savedBriefing!, nextBriefingAt: "2026-06-16T09:00:00.000Z" }],
+      now: new Date("2026-06-16T09:00:00.000Z")
+    });
+
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
+    expect(feedResponse.status).toBe(200);
+    const feed = (await feedResponse.json()) as { editions: Array<{ id: string; summary: string }> };
+    expect(feed.editions).toEqual([]);
+
+    const saved = await repo.getBriefingById(briefing!.id);
+    expect(saved?.nextBriefingAt).toBe("2026-06-16T10:00:00.000Z");
   });
 
   it("keeps a manually paused Telegram source paused across later ingest passes", async () => {

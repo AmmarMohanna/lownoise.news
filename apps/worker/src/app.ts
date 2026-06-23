@@ -1,4 +1,11 @@
-import { defaultNextBriefingAt, searchBriefingEditions, type BriefingConfig } from "@distilled/core";
+import {
+  defaultNextBriefingAt,
+  searchBriefingEditions,
+  selectEditionReferenceSections,
+  synthesizeEditionNarrativeSummary,
+  type BriefingConfig,
+  type BriefingEdition
+} from "@distilled/core";
 import { Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { z } from "zod";
@@ -83,6 +90,12 @@ const adminAccountUpdateSchema = z.object({
 });
 
 const FIXED_RETENTION_DAYS = 15;
+const FIXED_BRIEFING_TIME_OF_DAY = "00:00";
+
+const briefingCadenceSchema = z.preprocess(
+  (value) => (value === "monthly" ? "weekly" : value),
+  z.enum(["hourly", "daily", "weekly"])
+);
 
 const briefingInputSchema = z.object({
   id: z.string().min(1).default(() => `briefing_${crypto.randomUUID()}`),
@@ -95,7 +108,7 @@ const briefingInputSchema = z.object({
   paused: z.boolean().default(false),
   language: z.enum(["en", "ar", "fr"]).default("en"),
   intensity: z.enum(["low", "medium", "high"]).default("medium"),
-  briefingCadence: z.enum(["hourly", "daily", "weekly", "monthly"]).default("hourly"),
+  briefingCadence: briefingCadenceSchema.default("hourly"),
   briefingTimeOfDay: z.string().regex(/^\d{1,2}:\d{2}$/).default("00:00"),
   briefingTimezone: z.string().min(1).default("UTC"),
   nextBriefingAt: z.string().optional(),
@@ -354,14 +367,16 @@ export function createApp(options: AppOptions = {}) {
     const slug = normalizeUsername(input.slug || input.title);
     const existingSlug = await repo.getBriefingBySlug(account.id, slug);
     if (existingSlug && existingSlug.id !== input.id) return c.json({ error: "feed slug is already used" }, 409);
+    const briefingCadence = input.briefingCadence;
+    const briefingTimeOfDay = FIXED_BRIEFING_TIME_OF_DAY;
     const scheduleChanged = !existing ||
-      existing.briefingCadence !== input.briefingCadence ||
-      existing.briefingTimeOfDay !== input.briefingTimeOfDay ||
+      existing.briefingCadence !== briefingCadence ||
+      existing.briefingTimeOfDay !== briefingTimeOfDay ||
       existing.briefingTimezone !== input.briefingTimezone;
     const nextBriefingAt = scheduleChanged
       ? defaultNextBriefingAt({
-          cadence: input.briefingCadence,
-          timeOfDay: input.briefingTimeOfDay,
+          cadence: briefingCadence,
+          timeOfDay: briefingTimeOfDay,
           timezone: input.briefingTimezone
         })
       : input.nextBriefingAt ?? existing.nextBriefingAt;
@@ -373,6 +388,8 @@ export function createApp(options: AppOptions = {}) {
       stars: existing?.stars ?? input.stars,
       publicFeedEnabled: true,
       intensity: input.intensity,
+      briefingCadence,
+      briefingTimeOfDay,
       nextBriefingAt,
       retentionDays: FIXED_RETENTION_DAYS
     });
@@ -538,9 +555,11 @@ export function createApp(options: AppOptions = {}) {
     if (resolved instanceof Response) return resolved;
     const { repo, briefing } = resolved;
     const voterId = await getVoterId(c);
+    const editions = (await repo.listBriefingEditions(briefing.id, true))
+      .filter((edition) => isPublicEditionVisible(edition, briefing.language));
     return c.json({
       briefing: publicBriefing(briefing),
-      editions: await repo.listBriefingEditions(briefing.id, false),
+      editions: editions.map((edition) => publicEdition(edition, briefing, false)),
       viewerHasStarred: voterId ? await repo.hasBriefingStar(briefing.id, voterId) : false
     });
   });
@@ -551,7 +570,8 @@ export function createApp(options: AppOptions = {}) {
     const { repo, briefing } = resolved;
     const edition = await repo.getBriefingEdition(briefing.id, c.req.param("editionId"));
     if (!edition) return c.json({ error: "edition not found" }, 404);
-    return c.json({ edition });
+    if (!isPublicEditionVisible(edition, briefing.language)) return c.json({ error: "edition not found" }, 404);
+    return c.json({ edition: publicEdition(edition, briefing, true) });
   });
 
   app.get("/api/feed/:username/:briefingSlug/items/:itemId/evidence", async (c) => {
@@ -565,11 +585,13 @@ export function createApp(options: AppOptions = {}) {
     const resolved = await resolvePublicFeed(c);
     if (resolved instanceof Response) return resolved;
     const { repo, briefing } = resolved;
+    const editions = (await repo.listBriefingEditions(briefing.id, true, new Date(), 100))
+      .filter((edition) => isPublicEditionVisible(edition, briefing.language));
     return c.json({
       editions: searchBriefingEditions(
-        await repo.listBriefingEditions(briefing.id, true, new Date(), 100),
+        editions,
         c.req.query("q") ?? ""
-      )
+      ).map((edition) => publicEdition(edition, briefing, true))
     });
   });
 
@@ -859,6 +881,65 @@ function publicBriefing(briefing: BriefingConfig): Omit<BriefingConfig, "interes
     nextBriefingAt: briefing.nextBriefingAt,
     retentionDays: FIXED_RETENTION_DAYS
   };
+}
+
+function publicEdition(
+  edition: BriefingEdition,
+  briefing: Pick<BriefingConfig, "language">,
+  includeSections: boolean
+): BriefingEdition {
+  const sections = publicEditionSections(edition, briefing.language);
+  return {
+    ...edition,
+    summary: editionSummaryForLanguage(edition, briefing.language, sections),
+    sections: includeSections ? sections : []
+  };
+}
+
+function isPublicEditionVisible(edition: BriefingEdition, language: BriefingConfig["language"]): boolean {
+  return edition.status === "published" && publicEditionSections(edition, language).length > 0;
+}
+
+function publicEditionSections(
+  edition: BriefingEdition,
+  language: BriefingConfig["language"]
+): BriefingEdition["sections"] {
+  return selectEditionReferenceSections(edition.sections, edition.cadence, language, { strictLanguage: true })
+    .map((section) => ({
+      ...section,
+      title: localizedPublicSectionTitle(section.title, language)
+    }));
+}
+
+function editionSummaryForLanguage(
+  edition: BriefingEdition,
+  language: BriefingConfig["language"],
+  sections = publicEditionSections(edition, language)
+): string {
+  if (sections.length === 0) return synthesizeEditionNarrativeSummary([], edition.cadence, language);
+  return synthesizeEditionNarrativeSummary(sections, edition.cadence, language);
+}
+
+function localizedPublicSectionTitle(title: string, language: BriefingConfig["language"]): string {
+  if (language === "ar") {
+    if (/[\u0600-\u06FF]/u.test(title)) return title;
+    const normalized = title.trim().toLowerCase();
+    if (normalized.includes("economy")) return "اقتصاد";
+    if (normalized.includes("infrastructure")) return "بنية تحتية";
+    if (normalized.includes("security")) return "أمن";
+    if (normalized.includes("no update")) return "لا تحديثات";
+    return "تحديث";
+  }
+  if (language === "fr") {
+    const normalized = title.trim().toLowerCase();
+    if (normalized.includes("economy")) return "Économie";
+    if (normalized.includes("infrastructure")) return "Infrastructures";
+    if (normalized.includes("security")) return "Sécurité";
+    if (normalized.includes("no update")) return "Aucune mise à jour";
+    if (normalized === "update") return "Mise à jour";
+    return title || "Mise à jour";
+  }
+  return title;
 }
 
 async function maybeRedirectUsernameRoute(
