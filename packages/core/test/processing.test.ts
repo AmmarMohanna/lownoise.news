@@ -5,6 +5,7 @@ import {
   demoMessages,
   personalNewsBriefing,
   processMessages,
+  sanitizeEvidenceText,
   sanitizeSummary,
   searchBriefingItems
 } from "../src";
@@ -429,6 +430,21 @@ describe("summary prompt", () => {
         "💠عبري لايف|يسرائيل هيوم: أنباء أولية عن اتصالات متسارعة للتوصل إلى اتفاق مع لبنان https://twitter. com/LBCI_NEWS/status/2067311300137361568 June 17, 2026 at 08:19PM #lbcinews @LBCI_NEWS"
       )
     ).toBe("يسرائيل هيوم: أنباء أولية عن اتصالات متسارعة للتوصل إلى اتفاق مع لبنان");
+  });
+
+  it("removes bilingual Telegram boilerplate from Arabic summaries", () => {
+    expect(
+      sanitizeSummary(
+        "نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد\nNetanyahu: We have struck Iran and its proxies in the region, and the operation is not over yet\nــــــــــــــ\nقناة موقع بنت جبيل على واتساب",
+        "ar"
+      )
+    ).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
+  });
+
+  it("removes trailing channel boilerplate from Arabic evidence text", () => {
+    expect(
+      sanitizeEvidenceText("مشاهد توثق تمركز دبابات ميركافا وجرافة D9 في محيط جبانة حداثا قناة موقع بنت جبيل على واتساب", "ar")
+    ).toBe("مشاهد توثق تمركز دبابات ميركافا وجرافة D9 في محيط جبانة حداثا");
   });
 
   it("drops meta refusal summaries instead of publishing them", () => {

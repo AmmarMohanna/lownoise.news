@@ -57,11 +57,11 @@ export class DeterministicSummaryAdapter implements SummaryAdapter {
 }
 
 export function createEvidenceOnlySummary(
-  _briefing: BriefingConfig,
+  briefing: BriefingConfig,
   evidence: BriefingEvidence[]
 ): string {
   const candidates = evidence
-    .map((item) => sanitizeSummary(firstSentence(stripSummaryArtifacts(item.text))))
+    .map((item) => sanitizeSummary(firstSentence(sanitizeEvidenceText(item.text, briefing.language)), briefing.language))
     .filter((summary) => summary && !isLowInformationSummary(summary))
     .sort((left, right) => summaryInformationScore(right) - summaryInformationScore(left));
 
@@ -91,6 +91,7 @@ export function buildSummaryPrompt(input: SummaryInput): string {
     "If the evidence does not contain enough clear information/value to publish, return exactly NO_POST.",
     "If publishing, write one short standalone sentence that states the useful fact.",
     "Do not include URLs, social handles, hashtags, emoji markers, or source-channel prefixes.",
+    "For Arabic briefings, do not include English translations copied from bilingual source posts.",
     "Do not add political framing labels unless the user's instruction explicitly asks for them.",
     "Do not answer questions or speculate.",
     `Write the summary in ${summaryLanguage}.`,
@@ -103,8 +104,8 @@ export function buildSummaryPrompt(input: SummaryInput): string {
     .join("\n");
 }
 
-export function sanitizeSummary(summary: string): string {
-  const cleaned = stripSummaryArtifacts(summary);
+export function sanitizeSummary(summary: string, language?: BriefingConfig["language"]): string {
+  const cleaned = sanitizeEvidenceText(summary, language);
   if (!cleaned) return "";
   if (isArtifactSummary(cleaned)) return "";
   if (isLowInformationSummary(cleaned)) return "";
@@ -161,8 +162,19 @@ function isArtifactSentence(sentence: string): boolean {
   return ARTIFACT_SENTENCE_PATTERNS.some((pattern) => pattern.test(sentence));
 }
 
+export function sanitizeEvidenceText(text: string, language?: BriefingConfig["language"]): string {
+  const withoutArtifacts = stripSummaryArtifacts(text);
+  const languageCleaned = language === "ar" ? stripLatinTranslationFragments(withoutArtifacts) : withoutArtifacts;
+  return languageCleaned
+    .replace(/\s+([,.;:!?؟،])/gu, "$1")
+    .replace(/([:؛،,])\s*([.!؟?])/gu, "$2")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*/g, " ")
+    .trim();
+}
+
 function stripSummaryArtifacts(summary: string): string {
-  return summary
+  return stripBoilerplateLines(summary)
     .replace(/\bBREAKING:?\s*/gi, "")
     .replace(/https?:\/\/[A-Za-z0-9_-]+\.\s+[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+/gi, " ")
     .replace(/https?:\/\/[^\s]+/gi, " ")
@@ -176,7 +188,37 @@ function stripSummaryArtifacts(summary: string): string {
     .replace(/@[A-Za-z0-9_]{2,30}/g, " ")
     .replace(/[\p{Extended_Pictographic}\uFE0F\u200D\u{1F1E6}-\u{1F1FF}]+/gu, " ")
     .replace(/^\s*[\p{L}\p{N}_ .-]{2,48}\|/u, "")
+    .replace(/\s*[ـ_]{4,}\s*[^.!؟?\n]{0,180}/gu, " ")
+    .replace(/\s*(?:قناة\s+)?موقع\s+بنت\s+جبيل\s+على\s+واتساب/gu, " ")
     .replace(/^[\s|:؛،,.-]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripBoilerplateLines(text: string): string {
+  return text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line && !isBoilerplateLine(line))
+    .join(" ");
+}
+
+function isBoilerplateLine(line: string): boolean {
+  const cleaned = line.replace(/[\sـ_\-–—]+/gu, " ").trim();
+  if (!cleaned) return true;
+  return [
+    /^[ـ_\-–—\s]{4,}$/u,
+    /^(?:قناة\s+)?موقع\s+بنت\s+جبيل\s+على\s+واتساب/u,
+    /\b(?:download telegram|view in telegram|join channel|subscribe)\b/i,
+    /\b(?:read more|source|watch)\b/i,
+    /^(?:انضم|تابعونا|لمتابعة|للمزيد|للتفاصيل)(?:\s|$)/u
+  ].some((pattern) => pattern.test(line) || pattern.test(cleaned));
+}
+
+function stripLatinTranslationFragments(text: string): string {
+  if (!/[\u0600-\u06FF]/u.test(text)) return text;
+  return text
+    .replace(/\b[A-Za-z][A-Za-z0-9_'’"(),:;!?./\- ]{2,}(?=\s|$|[.!؟?،])/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }

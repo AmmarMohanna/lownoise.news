@@ -171,7 +171,7 @@ export function classifyNoise(message: NormalizedMessage): SuppressedMessage | n
 
   const concreteFact = hasConcreteFact(text);
 
-  if (FLUFF_PATTERNS.some((pattern) => pattern.test(text)) && text.length < 180 && !concreteFact) {
+  if (FLUFF_PATTERNS.some((pattern) => pattern.test(text)) && text.length < 180 && (!concreteFact || isDanglingDetailsTeaser(text))) {
     return {
       messageId: message.id,
       reason: "fluff",
@@ -207,6 +207,10 @@ export function classifyNoise(message: NormalizedMessage): SuppressedMessage | n
   }
 
   return null;
+}
+
+function isDanglingDetailsTeaser(text: string): boolean {
+  return /(?:إذا|اذا|لو|هل|ماذا|لماذا|كيف|[.؟?]{2,}|…|\|).{0,100}(?:للتفاصيل|للمزيد)/u.test(text);
 }
 
 export function hasConcreteFact(text: string): boolean {

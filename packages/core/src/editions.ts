@@ -1,6 +1,8 @@
 import { cadenceLabel } from "./cadence";
 import { processMessages } from "./processing";
+import { sanitizeEvidenceText, sanitizeSummary } from "./summarization";
 import type {
+  BriefingEvidence,
   BriefingConfig,
   BriefingEdition,
   BriefingEditionSection,
@@ -77,8 +79,8 @@ export function searchBriefingEditions(editions: BriefingEdition[], query: strin
 function itemToSection(item: BriefingItem, language: BriefingConfig["language"]): BriefingEditionSection {
   return {
     title: sectionTitle(item, language),
-    summary: item.summary,
-    evidence: item.evidence
+    summary: sanitizeSummary(item.summary, language),
+    evidence: item.evidence.map((entry) => sanitizeEvidenceForLanguage(entry, language))
   };
 }
 
@@ -100,7 +102,7 @@ export function synthesizeEditionNarrativeSummary(
 ): string {
   const referencedSections = selectEditionReferenceSections(sections, cadence, language);
   const referencedUpdates = referencedSections
-    .map((section, index) => referenceSentence(section.summary, index + 1))
+    .map((section, index) => referenceSentence(sanitizeEvidenceText(section.summary, language), index + 1))
     .filter(Boolean);
 
   if (referencedUpdates.length === 0) return editionSummary(0, cadence, language);
@@ -152,6 +154,27 @@ export function sectionSummaryMatchesFeedLanguage(summary: string, language: Bri
   if (language === "ar") return hasArabic;
   if (language === "en" || language === "fr") return hasLatin || !hasArabic;
   return true;
+}
+
+export function sanitizeEditionSectionForLanguage(
+  section: BriefingEditionSection,
+  language: BriefingConfig["language"]
+): BriefingEditionSection {
+  return {
+    ...section,
+    summary: sanitizeEvidenceText(section.summary, language),
+    evidence: section.evidence.map((entry) => sanitizeEvidenceForLanguage(entry, language))
+  };
+}
+
+function sanitizeEvidenceForLanguage(
+  evidence: BriefingEvidence,
+  language: BriefingConfig["language"]
+): BriefingEvidence {
+  return {
+    ...evidence,
+    text: sanitizeEvidenceText(evidence.text, language)
+  };
 }
 
 function referenceSentence(summary: string, referenceNumber: number): string {

@@ -1,8 +1,11 @@
 import {
   defaultNextBriefingAt,
   searchBriefingEditions,
+  sanitizeEditionSectionForLanguage,
+  sanitizeEvidenceText,
   selectEditionReferenceSections,
   synthesizeEditionNarrativeSummary,
+  type BriefingEvidence,
   type BriefingConfig,
   type BriefingEdition
 } from "@distilled/core";
@@ -578,7 +581,8 @@ export function createApp(options: AppOptions = {}) {
     const resolved = await resolvePublicFeed(c);
     if (resolved instanceof Response) return resolved;
     const { repo, briefing } = resolved;
-    return c.json({ evidence: await repo.getFeedItemEvidence(briefing.id, c.req.param("itemId")) });
+    const evidence = await repo.getFeedItemEvidence(briefing.id, c.req.param("itemId"));
+    return c.json({ evidence: evidence.map((entry) => publicEvidence(entry, briefing.language)) });
   });
 
   app.get("/api/feed/:username/:briefingSlug/search", async (c) => {
@@ -904,11 +908,22 @@ function publicEditionSections(
   edition: BriefingEdition,
   language: BriefingConfig["language"]
 ): BriefingEdition["sections"] {
-  return selectEditionReferenceSections(edition.sections, edition.cadence, language, { strictLanguage: true })
+  const sections = edition.sections.map((section) => sanitizeEditionSectionForLanguage(section, language));
+  return selectEditionReferenceSections(sections, edition.cadence, language, { strictLanguage: true })
     .map((section) => ({
       ...section,
       title: localizedPublicSectionTitle(section.title, language)
     }));
+}
+
+function publicEvidence(
+  evidence: BriefingEvidence,
+  language: BriefingConfig["language"]
+): BriefingEvidence {
+  return {
+    ...evidence,
+    text: sanitizeEvidenceText(evidence.text, language)
+  };
 }
 
 function editionSummaryForLanguage(

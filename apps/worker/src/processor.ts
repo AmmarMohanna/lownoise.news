@@ -69,7 +69,7 @@ export async function processQueueMessage(
         if (item.evidence.some((evidence) => evidence.messageId === rawMessage.id)) {
           const fallbackSummary = item.summary;
           try {
-            const candidateSummary = sanitizeSummary(await summaryAdapter.summarize({ briefing, evidence: item.evidence }));
+            const candidateSummary = sanitizeSummary(await summaryAdapter.summarize({ briefing, evidence: item.evidence }), briefing.language);
             if (candidateSummary) item.summary = candidateSummary;
             else if (!existingItemIds.has(item.id)) item.summary = "";
             else item.summary = fallbackSummary;

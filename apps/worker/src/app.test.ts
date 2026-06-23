@@ -709,6 +709,64 @@ describe("worker app accounts", () => {
     expect(detail.edition.sections[0].summary).not.toContain("Infrastructure");
   });
 
+  it("removes bilingual Telegram artifacts from saved Arabic public editions", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    await repo.upsertBriefing({ ...briefing!, language: "ar" });
+
+    const rawText = "نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد Netanyahu: We have struck Iran and its proxies in the region, and the operation is not over yet ــــــــــــــ قناة موقع بنت جبيل على واتساب";
+    await repo.saveBriefingEdition({
+      id: "edition_saved_artifact_arabic",
+      briefingId: briefing!.id,
+      cadence: "hourly",
+      windowStart: "2026-06-23T09:00:00.000Z",
+      windowEnd: "2026-06-23T10:00:00.000Z",
+      title: "تحديثات موثوقة",
+      summary: `تحديثات موثوقة: ${rawText} [1].`,
+      sections: [
+        {
+          title: "Security",
+          summary: rawText,
+          evidence: [
+            {
+              messageId: "msg_bintjbeil",
+              sourceId: "src_bintjbeil",
+              sourceTitle: "bintjbeil.org - موقع بنت جبيل",
+              sourceType: "channel",
+              sourceProvider: "telegram",
+              sourceKind: "telegram_channel",
+              postedAt: "2026-06-23T09:58:00.000Z",
+              text: rawText,
+              links: [],
+              media: [],
+              sourceUrl: "https://t.me/bintjbeilnews/1"
+            }
+          ]
+        }
+      ],
+      status: "published",
+      publishedAt: "2026-06-23T10:00:00.000Z",
+      createdAt: "2026-06-23T10:00:00.000Z",
+      updatedAt: "2026-06-23T10:00:00.000Z"
+    });
+
+    const feedResponse = await app.request("/api/feed/feed-owner/personal", {}, env());
+    expect(feedResponse.status).toBe(200);
+    const feed = (await feedResponse.json()) as { editions: Array<{ id: string; summary: string }> };
+    expect(feed.editions[0].summary).toBe("تحديثات موثوقة: نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد [1].");
+    expect(feed.editions[0].summary).not.toContain("Netanyahu");
+    expect(feed.editions[0].summary).not.toContain("ــــ");
+
+    const editionResponse = await app.request("/api/feed/feed-owner/personal/editions/edition_saved_artifact_arabic", {}, env());
+    expect(editionResponse.status).toBe(200);
+    const detail = (await editionResponse.json()) as { edition: { sections: Array<{ summary: string; evidence: Array<{ text: string }> }> } };
+    expect(detail.edition.sections[0].summary).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
+    expect(detail.edition.sections[0].evidence[0].text).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
+  });
+
   it("does not publish wrong-language Arabic editions when localization is unavailable", async () => {
     const repo = new InMemoryRepository();
     const app = createApp({ repository: repo });

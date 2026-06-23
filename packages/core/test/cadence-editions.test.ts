@@ -86,6 +86,33 @@ describe("briefing editions", () => {
     expect(edition.sections[0].title).toBe("لا تحديثات");
   });
 
+  it("cleans bilingual Telegram artifacts from Arabic editions", () => {
+    const message: NormalizedMessage = {
+      id: "briefing_default::msg_bintjbeil",
+      source: { id: "src_bintjbeil", title: "bintjbeil.org - موقع بنت جبيل", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "msg_bintjbeil",
+      text: "نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد\nNetanyahu: We have struck Iran and its proxies in the region, and the operation is not over yet\nــــــــــــــ\nقناة موقع بنت جبيل على واتساب",
+      links: [],
+      media: [],
+      postedAt: "2026-06-23T09:58:00.000Z",
+      receivedAt: "2026-06-23T09:58:20.000Z",
+      sourceUrl: "https://t.me/bintjbeilnews/1",
+      expiresAt: "2026-07-08T09:58:00.000Z"
+    };
+
+    const edition = buildBriefingEdition({
+      briefing: { ...personalNewsBriefing, language: "ar", intensity: "medium" },
+      messages: [message],
+      windowStart: "2026-06-23T09:00:00.000Z",
+      windowEnd: "2026-06-23T10:00:00.000Z",
+      now: new Date("2026-06-23T10:00:00.000Z")
+    });
+
+    expect(edition.summary).toBe("تحديثات موثوقة: نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد [1].");
+    expect(edition.sections[0].summary).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
+    expect(edition.sections[0].evidence[0].text).toBe("نتنياهو: وجهنا ضربة إلى إيران ووكلائها في المنطقة وهي عملية لم تنته بعد");
+  });
+
   it("synthesizes multiple updates into one referenced paragraph", () => {
     const summary = synthesizeEditionNarrativeSummary(
       [

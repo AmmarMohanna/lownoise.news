@@ -81,7 +81,7 @@ export class OpenAIGatewaySummaryAdapter implements SummaryAdapter {
     });
     const content = payload.choices?.[0]?.message?.content?.trim();
     if (!content) throw new Error("AI Gateway returned an empty summary");
-    return sanitizeSummary(content);
+    return sanitizeSummary(content, input.briefing.language);
   }
 }
 
