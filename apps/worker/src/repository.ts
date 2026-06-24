@@ -1113,7 +1113,20 @@ export class D1Repository implements Repository {
   }
 
   async getHealth(briefingId?: string): Promise<HealthStatus> {
+    const lastImportedMessageAt =
+      (briefingId
+        ? await this.getSetting(`last_imported_message_at:${briefingId}`)
+        : null) ??
+      (await this.getSetting("last_imported_message_at")) ??
+      undefined;
+    const lastSourceFetchAt =
+      (briefingId
+        ? await this.getSetting(`last_source_fetch_at:${briefingId}`)
+        : null) ??
+      (await this.getSetting("last_source_fetch_at")) ??
+      undefined;
     const lastSourceEventAt =
+      lastImportedMessageAt ??
       (briefingId
         ? await this.getSetting(`last_source_event_at:${briefingId}`)
         : null) ??
@@ -1153,6 +1166,8 @@ export class D1Repository implements Repository {
     const briefing = briefingId ? await this.getBriefingById(briefingId) : null;
     return {
       lastSourceEventAt,
+      lastSourceFetchAt,
+      lastImportedMessageAt,
       latestPublishedAt: latestPublishedRow?.latest_published_at ?? undefined,
       nextBriefingAt: briefing?.nextBriefingAt,
       processing
@@ -1345,6 +1360,21 @@ export class D1Repository implements Repository {
       )
       .bind(key, value, now.toISOString())
       .run();
+  }
+
+  async listExpiredRawPayloadKeys(now = new Date()): Promise<string[]> {
+    const rows = await all<{ raw_payload_key: string }>(
+      this.db
+        .prepare(
+          `SELECT DISTINCT raw_payload_key
+          FROM raw_messages
+          WHERE expires_at <= ?
+            AND raw_payload_key IS NOT NULL
+            AND raw_payload_key != ''`
+        )
+        .bind(now.toISOString())
+    );
+    return rows.map((row) => row.raw_payload_key);
   }
 
   async deleteExpired(now = new Date()): Promise<number> {
@@ -2154,10 +2184,18 @@ export class InMemoryRepository implements Repository {
     }
     return {
       lastSourceEventAt:
+        (briefingId ? this.settings.get(`last_imported_message_at:${briefingId}`) : undefined) ??
+        this.settings.get("last_imported_message_at") ??
         (briefingId ? this.settings.get(`last_source_event_at:${briefingId}`) : undefined) ??
         (briefingId ? this.settings.get(`last_telegram_event_at:${briefingId}`) : undefined) ??
         this.settings.get("last_source_event_at") ??
         this.settings.get("last_telegram_event_at"),
+      lastSourceFetchAt:
+        (briefingId ? this.settings.get(`last_source_fetch_at:${briefingId}`) : undefined) ??
+        this.settings.get("last_source_fetch_at"),
+      lastImportedMessageAt:
+        (briefingId ? this.settings.get(`last_imported_message_at:${briefingId}`) : undefined) ??
+        this.settings.get("last_imported_message_at"),
       latestPublishedAt: latestEditionPublishedAt(this.editionsByBriefing, briefingId),
       nextBriefingAt: briefingId ? this.briefings.get(briefingId)?.nextBriefingAt : undefined,
       processing
@@ -2273,6 +2311,15 @@ export class InMemoryRepository implements Repository {
 
   async setSetting(key: string, value: string): Promise<void> {
     this.settings.set(key, value);
+  }
+
+  async listExpiredRawPayloadKeys(now = new Date()): Promise<string[]> {
+    return Array.from(new Set(
+      Array.from(this.rawMessages.values())
+        .filter((message) => new Date(message.expiresAt).getTime() <= now.getTime())
+        .map((message) => message.rawPayloadKey)
+        .filter((key): key is string => Boolean(key))
+    ));
   }
 
   async deleteExpired(now = new Date()): Promise<number> {

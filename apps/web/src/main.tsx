@@ -1314,6 +1314,7 @@ function HealthSummary(props: {
   const isPaused = props.briefing.paused;
   const activity = isHealthActivity(props.activity) ? props.activity : `${summary.latest} · ${summary.queueState}`;
   const nextBriefingAt = props.health?.nextBriefingAt ?? props.briefing.nextBriefingAt;
+  const lastImportedAt = props.health?.lastImportedMessageAt ?? props.health?.lastSourceEventAt;
   const nextBriefingValue = isPaused
     ? pausedScheduleLabel(props.briefing.language)
     : nextBriefingAt
@@ -1331,8 +1332,13 @@ function HealthSummary(props: {
       <div className="health">
         <StatusLine label="processing" value={`queued ${props.health?.processing.queued ?? 0} / failed ${props.health?.processing.failed ?? 0}`} />
         <StatusLine
-          label="last source event"
-          value={props.health?.lastSourceEventAt ? <Timestamp value={props.health.lastSourceEventAt} language={props.briefing.language} /> : "none"}
+          label="last source check"
+          value={props.health?.lastSourceFetchAt ? <Timestamp value={props.health.lastSourceFetchAt} language={props.briefing.language} /> : "none"}
+          valueDir="ltr"
+        />
+        <StatusLine
+          label="last imported post"
+          value={lastImportedAt ? <Timestamp value={lastImportedAt} language={props.briefing.language} /> : "none"}
           valueDir="ltr"
         />
         <StatusLine

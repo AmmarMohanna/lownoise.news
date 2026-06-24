@@ -15,6 +15,10 @@ class FakeBucket {
   async put(key: string, value: string): Promise<void> {
     this.objects.set(key, value);
   }
+
+  async delete(key: string): Promise<void> {
+    this.objects.delete(key);
+  }
 }
 
 class FakeQueue {
@@ -35,7 +39,9 @@ class FakeEmail {
 
 class FailingEmail {
   async send(): Promise<void> {
-    throw new Error("email service unavailable");
+    const error = new Error("Domain not available for sending") as Error & { code: string };
+    error.code = "E_SENDER_DOMAIN_NOT_AVAILABLE";
+    throw error;
   }
 }
 
@@ -171,7 +177,9 @@ describe("worker app accounts", () => {
       expect(errorSpy).toHaveBeenCalledWith("Could not send verification email", {
         accountId: "account_1",
         emailDomain: "test.com",
-        error: "email service unavailable"
+        senderDomain: "distilled.news",
+        errorCode: "E_SENDER_DOMAIN_NOT_AVAILABLE",
+        error: "Domain not available for sending"
       });
     } finally {
       errorSpy.mockRestore();
@@ -216,6 +224,23 @@ describe("worker app accounts", () => {
       env(email)
     );
     expect(verifyResponse.status).toBe(200);
+
+    const repeatedVerifyResponse = await app.request(
+      "/api/auth/verify-email",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: verifyToken })
+      },
+      env(email)
+    );
+    expect(repeatedVerifyResponse.status).toBe(200);
+    expect(await repeatedVerifyResponse.json()).toMatchObject({
+      account: {
+        email: "user@test.com",
+        emailVerifiedAt: expect.any(String)
+      }
+    });
 
     await app.request(
       "/api/auth/password/forgot",
@@ -367,7 +392,7 @@ describe("worker app accounts", () => {
       env()
     );
     expect(sourceResponse.status).toBe(200);
-    expect(queue.messages).toHaveLength(0);
+    expect(queue.messages).toHaveLength(1);
     const savedBriefing = await repo.getBriefingById(briefingId);
     expect(savedBriefing).not.toBeNull();
     await publishDueBriefingEditions({
@@ -860,6 +885,7 @@ describe("worker app accounts", () => {
       url: "https://t.me/LebUpdate",
       repo,
       bucket,
+      queue,
       fetcher: fetcher as unknown as typeof fetch,
       now: new Date("2026-06-16T08:02:00.000Z")
     });
@@ -889,7 +915,7 @@ describe("worker app accounts", () => {
       env()
     );
     expect(sourceResponse.status).toBe(200);
-    expect(queue.messages).toHaveLength(0);
+    expect(queue.messages).toHaveLength(1);
 
     const rawMessages = await repo.listRawMessagesForWindow(
       briefing!.id,
@@ -897,7 +923,7 @@ describe("worker app accounts", () => {
       "2026-06-15T19:00:00.000Z"
     );
     expect(rawMessages).toHaveLength(1);
-    const jobId = await repo.createProcessingJob(briefing!.id, rawMessages[0].id);
+    const jobId = queue.messages[0].jobId;
 
     await processQueueMessage(repo, { jobId, briefingId: briefing!.id, rawMessageId: rawMessages[0].id }, new Date("2026-06-15T19:00:00.000Z"), {
       summarize: async () => "NO_POST"
@@ -928,7 +954,7 @@ describe("worker app accounts", () => {
       env()
     );
     expect(sourceResponse.status).toBe(200);
-    expect(queue.messages).toHaveLength(0);
+    expect(queue.messages).toHaveLength(1);
 
     const rawMessages = await repo.listRawMessagesForWindow(
       briefing!.id,
@@ -936,7 +962,7 @@ describe("worker app accounts", () => {
       "2026-06-15T19:00:00.000Z"
     );
     expect(rawMessages).toHaveLength(1);
-    const jobId = await repo.createProcessingJob(briefing!.id, rawMessages[0].id);
+    const jobId = queue.messages[0].jobId;
 
     await expect(processQueueMessage(repo, { jobId, briefingId: briefing!.id, rawMessageId: rawMessages[0].id }, new Date("2026-06-15T19:00:00.000Z"), {
       summarize: async () => {
@@ -1220,7 +1246,7 @@ describe("worker app accounts", () => {
       fetcher: fetcher as unknown as typeof fetch
     });
 
-    expect(queue.messages).toHaveLength(0);
+    expect(queue.messages).toHaveLength(1);
     expect(Array.from(bucket.objects.keys()).some((key) => key.includes("apify/"))).toBe(true);
     const savedBriefing = await repo.getBriefingById(briefing!.id);
     expect(savedBriefing).not.toBeNull();
@@ -1550,6 +1576,64 @@ describe("worker app accounts", () => {
       env()
     );
     expect(newLogin.status).toBe(200);
+  });
+
+  it("treats malformed session cookies as unauthenticated", async () => {
+    const app = createApp({ repository: new InMemoryRepository() });
+
+    const response = await app.request(
+      "/api/me/account",
+      { headers: { cookie: "dn_session=not-a-valid-session" } },
+      env()
+    );
+
+    expect(response.status).toBe(401);
+  });
+
+  it("fails closed for retention cleanup and deletes expired R2 archives when authorized", async () => {
+    const repo = new InMemoryRepository();
+    const bucket = new FakeBucket();
+    const app = createApp({ repository: repo, bucket, queue: new FakeQueue() });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Owner User");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    const archiveKey = "telegram-public/briefing_1/source/expired.html";
+    await bucket.put(archiveKey, "<html>old</html>");
+    const message: NormalizedMessage = {
+      id: `${briefing!.id}::expired_message`,
+      source: { id: "src_expired", title: "Expired Source", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "expired_message",
+      text: "Expired source post.",
+      links: [],
+      media: [],
+      postedAt: "2026-05-01T10:00:00.000Z",
+      receivedAt: "2026-05-01T10:00:10.000Z",
+      sourceUrl: "https://t.me/source/1",
+      rawPayloadKey: archiveKey,
+      expiresAt: "2026-05-16T10:00:00.000Z"
+    };
+    const source = await repo.upsertSourceFromMessage(briefing!.id, message);
+    await repo.saveRawMessage(briefing!.id, { ...message, source: { ...message.source, id: source.id } });
+
+    const blocked = await app.request(
+      "/api/internal/retention/run",
+      { method: "POST" },
+      { ...env(), INTERNAL_MAINTENANCE_SECRET: undefined } as Env
+    );
+    expect(blocked.status).toBe(401);
+    expect(await repo.getRawMessage(message.id)).not.toBeNull();
+    expect(bucket.objects.has(archiveKey)).toBe(true);
+
+    const authorized = await app.request(
+      "/api/internal/retention/run",
+      { method: "POST", headers: { "x-distilled-internal": "internal-secret" } },
+      env()
+    );
+    expect(authorized.status).toBe(200);
+    expect(await authorized.json()).toEqual({ deleted: 1, archivesDeleted: 1, archiveDeleteFailures: 0 });
+    expect(await repo.getRawMessage(message.id)).toBeNull();
+    expect(bucket.objects.has(archiveKey)).toBe(false);
   });
 
   it("lets admins view and manage accounts while preserving at least one admin", async () => {

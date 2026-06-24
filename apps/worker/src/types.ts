@@ -60,7 +60,6 @@ export interface Env {
   RAW_ARCHIVE: R2Bucket;
   PROCESSING_QUEUE: Queue<ProcessingJobMessage>;
   EMAIL?: SendEmail;
-  VECTORIZE?: VectorizeIndex;
   ASSETS?: Fetcher;
   ADMIN_SESSION_SECRET?: string;
   ADMIN_SETUP_TOKEN?: string;
@@ -75,7 +74,6 @@ export interface Env {
   CLOUDFLARE_AI_GATEWAY_TOKEN?: string;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
-  OPENAI_EMBEDDING_MODEL?: string;
   OPENAI_INPUT_PRICE_USD_PER_MILLION_TOKENS?: string;
   OPENAI_OUTPUT_PRICE_USD_PER_MILLION_TOKENS?: string;
   APIFY_API_TOKEN?: string;
@@ -134,6 +132,8 @@ export interface SourceRunRecord {
 
 export interface HealthStatus {
   lastSourceEventAt?: string;
+  lastSourceFetchAt?: string;
+  lastImportedMessageAt?: string;
   latestPublishedAt?: string;
   nextBriefingAt?: string;
   processing: {
@@ -285,5 +285,6 @@ export interface Repository {
   }): Promise<number>;
   getSetting(key: string): Promise<string | null>;
   setSetting(key: string, value: string, now?: Date): Promise<void>;
+  listExpiredRawPayloadKeys(now?: Date): Promise<string[]>;
   deleteExpired(now?: Date): Promise<number>;
 }

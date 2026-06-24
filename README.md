@@ -2,9 +2,9 @@
 
 Distilled.news is a Cloudflare-first, self-hostable personal news briefing filter.
 
-V1 ingests public Telegram channel URLs plus optional RSS, Google News, and X sources, filters noisy posts against an interest profile, merges repeated updates, and publishes a calm monospace briefing with expandable evidence links. It does not include chatbot or Q&A behavior.
+Distilled.news ingests public Telegram channel URLs plus optional RSS, Google News, X, LinkedIn, and Apify-backed sources, filters noisy posts against an interest profile, merges repeated updates, and publishes a calm monospace briefing with expandable evidence links. It does not include chatbot or Q&A behavior.
 
-## What V1 Does
+## What It Does
 
 - Public email signup with verified accounts, password login/reset, and admin oversight.
 - User-owned briefings with plain-language interest profiles.
@@ -13,7 +13,7 @@ V1 ingests public Telegram channel URLs plus optional RSS, Google News, and X so
 - Rule-first filtering with optional OpenAI summaries through Cloudflare AI Gateway.
 - Feed intensity toggle for low, medium, or high publishing strictness.
 - Expandable evidence for each briefing item.
-- Search over retained published briefing items and their evidence only.
+- Basic search over retained published briefing items and their evidence only.
 - 15-day default retention for active news/media context.
 - Per-feed pause/resume and language selection.
 
@@ -23,7 +23,6 @@ V1 ingests public Telegram channel URLs plus optional RSS, Google News, and X so
 - Cloudflare D1 for app data.
 - Cloudflare R2 for raw source payload archives.
 - Cloudflare Queues for processing jobs.
-- Cloudflare Vectorize indexes published briefing items when AI Gateway embedding secrets are configured.
 - Cloudflare Email Service for account verification and password reset email.
 - Cloudflare AI Gateway routing to OpenAI for production summaries.
 - Apify Actors for optional Google News, X, and advanced LinkedIn/source scraping.
@@ -50,11 +49,12 @@ npx pnpm@10.12.1 dev
 For deployment:
 
 ```sh
-npx pnpm@10.12.1 setup
+npx pnpm@10.12.1 run setup
+npx pnpm@10.12.1 --filter @distilled/worker db:migrate:remote
 npx pnpm@10.12.1 run deploy
 ```
 
-Update `apps/worker/wrangler.toml` with real Cloudflare resource IDs before production deploy. Enabled sources are refreshed by the Worker cron trigger.
+`npx pnpm@10.12.1 run setup` creates local `.env` and Worker `.dev.vars` files when needed, generates missing app secrets, and can run extra checks with `-- --check`. Update `apps/worker/wrangler.toml` with real Cloudflare resource IDs before production deploy. Enabled sources are refreshed by the Worker cron trigger.
 
 `distilled.news` is the canonical production domain. `lownoise.news` and `www.lownoise.news` are kept as legacy routes that redirect to `https://distilled.news`.
 
@@ -87,7 +87,7 @@ destination addresses in the Cloudflare account.
 4. Add sources such as `t: LebUpdate`, `rss: https://example.com/feed.xml`, `news: Lebanon Electricity`, or `x: NASA`.
 5. Write the interest profile and save.
 6. Use `fetch latest` once to validate ingestion.
-7. Keep the feed private or explicitly enable public feed.
+7. Share the username-scoped public feed URL when ready.
 
 Default Apify actors:
 
@@ -141,4 +141,4 @@ See `examples/` for starting interest profiles:
 - `tech-news.json`
 - `local-community.json`
 
-These are examples only; V1 keeps configuration simple in the admin UI.
+These are examples only; configuration stays simple in the admin UI.

@@ -93,7 +93,8 @@ export async function verifySession(token: string | undefined, secret: string, n
   if (!payload || !signature) return null;
   if (!timingSafeEqual(await sign(payload, secret), signature)) return null;
 
-  const decoded = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as SessionClaims;
+  const decoded = parseJsonPayload<SessionClaims>(payload);
+  if (!decoded) return null;
   if (!decoded.sub || (decoded.role !== "admin" && decoded.role !== "user")) return null;
   if (decoded.exp <= Math.floor(now.getTime() / 1000)) return null;
   return decoded;
@@ -215,9 +216,18 @@ async function verifyTokenSubject(token: string, secret: string, now = new Date(
   if (!payload || !signature) return null;
   if (!timingSafeEqual(await sign(payload, secret), signature)) return null;
 
-  const decoded = JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as { sub: string; exp: number };
+  const decoded = parseJsonPayload<{ sub: string; exp: number }>(payload);
+  if (!decoded) return null;
   if (decoded.exp <= Math.floor(now.getTime() / 1000)) return null;
   return decoded.sub;
+}
+
+function parseJsonPayload<T>(payload: string): T | null {
+  try {
+    return JSON.parse(new TextDecoder().decode(fromBase64Url(payload))) as T;
+  } catch {
+    return null;
+  }
 }
 
 function timingSafeEqual(left: string, right: string): boolean {

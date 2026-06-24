@@ -35,6 +35,8 @@ export interface SourceRecord {
 
 export interface HealthStatus {
   lastSourceEventAt?: string;
+  lastSourceFetchAt?: string;
+  lastImportedMessageAt?: string;
   latestPublishedAt?: string;
   nextBriefingAt?: string;
   processing: {

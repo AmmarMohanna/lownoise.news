@@ -16,7 +16,6 @@ PUBLIC_WEB_BASE_URL = "https://distilled.news"
 CLOUDFLARE_ACCOUNT_ID = "9cd5e9612de11953c367cbdec84ed662"
 CLOUDFLARE_AI_GATEWAY_ID = "default"
 OPENAI_MODEL = "gpt-4.1-mini"
-OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 EMAIL_FROM = "Distilled.news <noreply@distilled.news>"
 APIFY_GOOGLE_NEWS_ACTOR_ID = "groupoject/google-news-scraper"
 APIFY_X_ACTOR_ID = "kaitoeasyapi/twitter-x-data-tweet-scraper-pay-per-result-cheapest"
@@ -47,10 +46,6 @@ max_batch_timeout = 5
 
 [triggers]
 crons = ["* * * * *"]
-
-[[vectorize]]
-binding = "VECTORIZE"
-index_name = "lownoise-published"
 
 [[routes]]
 pattern = "distilled.news"

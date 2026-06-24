@@ -31,6 +31,7 @@ import {
 } from "./auth";
 import { sendPasswordResetEmail, sendVerificationEmail } from "./mailer";
 import { D1Repository } from "./repository";
+import { runRetentionCleanup } from "./retention";
 import { addSourceFromInput, refreshEnabledSources } from "./sources";
 import type { AccountRecord, AccountRole, Env, ProcessingJobMessage, Repository } from "./types";
 
@@ -44,7 +45,10 @@ const LEGACY_HOSTS = new Set(["lownoise.news", "www.lownoise.news"]);
 
 export interface AppOptions {
   repository?: Repository;
-  bucket?: { put(key: string, value: string, options?: unknown): Promise<unknown> };
+  bucket?: {
+    put(key: string, value: string, options?: unknown): Promise<unknown>;
+    delete(key: string): Promise<unknown>;
+  };
   queue?: { send(message: ProcessingJobMessage): Promise<unknown> };
   fetcher?: typeof fetch;
 }
@@ -263,7 +267,7 @@ export function createApp(options: AppOptions = {}) {
     try {
       await sendVerificationToken(repo, c.env, account);
     } catch (error) {
-      logAuthEmailFailure("verification", account, error);
+      logAuthEmailFailure("verification", account, c.env, error);
       await repo.deleteAccount(account.id);
       return c.json({ error: "could not send verification email" }, 502);
     }
@@ -273,12 +277,14 @@ export function createApp(options: AppOptions = {}) {
   app.post("/api/auth/verify-email", async (c) => {
     const repo = repoFor(c);
     const input = tokenInputSchema.parse(await c.req.json().catch(() => ({})));
-    const account = await consumeTokenOrNull(repo, input.token, "email_verification", new Date());
-    if (!account) return c.json({ error: "invalid or expired token" }, 400);
-    const verified = await repo.updateAccount({ id: account.id, emailVerifiedAt: new Date().toISOString() });
+    const result = await consumeEmailVerificationTokenOrNull(repo, input.token, new Date());
+    if (!result) return c.json({ error: "invalid or expired token" }, 400);
+    const verified = result.account.emailVerifiedAt
+      ? result.account
+      : await repo.updateAccount({ id: result.account.id, emailVerifiedAt: new Date().toISOString() });
     if (!c.env.ADMIN_SESSION_SECRET) return c.json({ error: "ADMIN_SESSION_SECRET is not configured" }, 500);
     await repo.ensureDefaultBriefing(verified);
-    setSessionCookie(c, await createSession(c.env.ADMIN_SESSION_SECRET, verified));
+    if (result.newlyConsumed) setSessionCookie(c, await createSession(c.env.ADMIN_SESSION_SECRET, verified));
     return c.json({ account: publicAccount(verified) });
   });
 
@@ -315,7 +321,7 @@ export function createApp(options: AppOptions = {}) {
       try {
         await sendPasswordResetToken(repo, c.env, account);
       } catch (error) {
-        logAuthEmailFailure("password reset", account, error);
+        logAuthEmailFailure("password reset", account, c.env, error);
       }
     }
     return c.json({ ok: true });
@@ -473,7 +479,8 @@ export function createApp(options: AppOptions = {}) {
       bucket: bucketFor(c),
       queue: queueFor(c),
       env: c.env,
-      fetcher
+      fetcher,
+      force: true
     });
     return c.json({
       sources: await repo.listSources(briefing.id),
@@ -655,11 +662,13 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.post("/api/internal/retention/run", async (c) => {
-    if (c.req.header("x-distilled-internal") !== c.env.INTERNAL_MAINTENANCE_SECRET) {
+    const secret = c.env.INTERNAL_MAINTENANCE_SECRET?.trim();
+    const provided = c.req.header("x-distilled-internal")?.trim();
+    if (!secret || !provided || provided !== secret) {
       return c.json({ error: "unauthorized" }, 401);
     }
     const repo = repoFor(c);
-    return c.json({ deleted: await repo.deleteExpired() });
+    return c.json(await runRetentionCleanup(repo, bucketFor(c), new Date()));
   });
 
   app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
@@ -770,6 +779,20 @@ async function consumeToken(
   return account;
 }
 
+async function consumeEmailVerificationTokenOrNull(
+  repo: Repository,
+  token: string,
+  now: Date
+): Promise<{ account: AccountRecord; newlyConsumed: boolean } | null> {
+  const record = await repo.getAuthToken(await hashToken(token), "email_verification");
+  if (!record || new Date(record.expiresAt).getTime() <= now.getTime()) return null;
+  const account = await repo.getAccountById(record.accountId);
+  if (!account || account.disabledAt) return null;
+  if (record.consumedAt) return account.emailVerifiedAt ? { account, newlyConsumed: false } : null;
+  await repo.consumeAuthToken(record.id, now);
+  return { account, newlyConsumed: true };
+}
+
 async function consumeTokenOrNull(
   repo: Repository,
   token: string,
@@ -872,12 +895,30 @@ function publicAccount(account: AccountRecord) {
   };
 }
 
-function logAuthEmailFailure(kind: string, account: AccountRecord, error: unknown): void {
-  console.error(`Could not send ${kind} email`, {
+function logAuthEmailFailure(kind: string, account: AccountRecord, env: Env, error: unknown): void {
+  const details: Record<string, string | undefined> = {
     accountId: account.id,
     emailDomain: account.email.split("@").at(-1),
+    senderDomain: emailDomainFromAddress(env.EMAIL_FROM),
+    errorCode: errorProperty(error, "code"),
     error: error instanceof Error ? error.message : String(error)
-  });
+  };
+  for (const key of Object.keys(details)) {
+    if (details[key] === undefined) delete details[key];
+  }
+  console.error(`Could not send ${kind} email`, details);
+}
+
+function emailDomainFromAddress(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const address = value.match(/<([^<>]+)>/)?.[1] ?? value;
+  return address.trim().split("@").at(-1);
+}
+
+function errorProperty(error: unknown, key: string): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function publicBriefing(briefing: BriefingConfig): Omit<BriefingConfig, "interestProfile" | "styleInstruction"> {

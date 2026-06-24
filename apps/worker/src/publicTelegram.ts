@@ -4,7 +4,7 @@ import {
   parsePublicTelegramChannelUrl,
   publicTelegramSourceId
 } from "@distilled/connectors";
-import type { Repository, SourceRecord } from "./types";
+import type { ProcessingJobMessage, Repository, SourceRecord } from "./types";
 
 export interface PublicTelegramIngestResult {
   sourceId: string;
@@ -21,6 +21,7 @@ export interface PublicTelegramIngestInput {
   url: string;
   repo: Repository;
   bucket: { put(key: string, value: string, options?: unknown): Promise<unknown> };
+  queue: { send(message: ProcessingJobMessage): Promise<unknown> };
   activateSource?: boolean;
   fetcher?: typeof fetch;
   now?: Date;
@@ -41,10 +42,7 @@ export async function ingestPublicTelegramChannel(input: PublicTelegramIngestInp
   }
 
   const html = await response.text();
-  const rawPayloadKey = `telegram-public/${input.briefing.id}/${channel.username}/${now.getTime()}.html`;
-  await input.bucket.put(rawPayloadKey, html, {
-    httpMetadata: { contentType: "text/html; charset=utf-8" }
-  });
+  const rawPayloadKey = await archiveTelegramPageIfChanged(input, channel.username, html, now);
 
   const messages = parsePublicTelegramChannelPage(html, {
     username: channel.username,
@@ -54,7 +52,7 @@ export async function ingestPublicTelegramChannel(input: PublicTelegramIngestInp
 
   let source: SourceRecord | undefined;
   let imported = 0;
-  const queued = 0;
+  let queued = 0;
   let skipped = 0;
 
   for (const message of messages) {
@@ -79,13 +77,25 @@ export async function ingestPublicTelegramChannel(input: PublicTelegramIngestInp
     }
 
     await input.repo.saveRawMessage(input.briefing.id, persistedMessage, now);
+    const jobId = await input.repo.createProcessingJob(input.briefing.id, persistedMessage.id, now);
+    await input.queue.send({ jobId, briefingId: input.briefing.id, rawMessageId: persistedMessage.id });
     imported += 1;
+    queued += 1;
   }
 
-  await input.repo.setSetting("last_source_event_at", now.toISOString(), now);
-  await input.repo.setSetting(`last_source_event_at:${input.briefing.id}`, now.toISOString(), now);
-  await input.repo.setSetting("last_telegram_event_at", now.toISOString(), now);
-  await input.repo.setSetting(`last_telegram_event_at:${input.briefing.id}`, now.toISOString(), now);
+  await markSourceFetch(input.repo, input.briefing.id, now);
+  if (imported > 0) {
+    await markImportedMessage(input.repo, input.briefing.id, now);
+    await input.repo.setSetting("last_telegram_event_at", now.toISOString(), now);
+    await input.repo.setSetting(`last_telegram_event_at:${input.briefing.id}`, now.toISOString(), now);
+  }
+  if (source) {
+    await input.repo.updateSourceState({
+      sourceId: source.id,
+      lastCheckedAt: now.toISOString(),
+      lastError: undefined
+    }, now);
+  }
 
   return {
     sourceId: source?.id ?? publicTelegramSourceId(channel.username),
@@ -111,6 +121,45 @@ export async function refreshPublicTelegramSources(input: Omit<PublicTelegramIng
   return results;
 }
 
+async function archiveTelegramPageIfChanged(
+  input: PublicTelegramIngestInput,
+  username: string,
+  html: string,
+  now: Date
+): Promise<string | undefined> {
+  const hash = await sha256Hex(html);
+  const hashSetting = `raw_archive_hash:telegram:${input.briefing.id}:${username}`;
+  const keySetting = `raw_archive_key:telegram:${input.briefing.id}:${username}`;
+  const existingHash = await input.repo.getSetting(hashSetting);
+  const existingKey = await input.repo.getSetting(keySetting);
+  if (existingHash === hash && existingKey) return existingKey;
+
+  const rawPayloadKey = `telegram-public/${input.briefing.id}/${username}/${now.getTime()}.html`;
+  await input.bucket.put(rawPayloadKey, html, {
+    httpMetadata: { contentType: "text/html; charset=utf-8" }
+  });
+  await input.repo.setSetting(hashSetting, hash, now);
+  await input.repo.setSetting(keySetting, rawPayloadKey, now);
+  return rawPayloadKey;
+}
+
+async function markSourceFetch(repo: Repository, briefingId: string, now: Date): Promise<void> {
+  await repo.setSetting("last_source_fetch_at", now.toISOString(), now);
+  await repo.setSetting(`last_source_fetch_at:${briefingId}`, now.toISOString(), now);
+}
+
+async function markImportedMessage(repo: Repository, briefingId: string, now: Date): Promise<void> {
+  await repo.setSetting("last_imported_message_at", now.toISOString(), now);
+  await repo.setSetting(`last_imported_message_at:${briefingId}`, now.toISOString(), now);
+  await repo.setSetting("last_source_event_at", now.toISOString(), now);
+  await repo.setSetting(`last_source_event_at:${briefingId}`, now.toISOString(), now);
+}
+
 function scopedRawMessageId(briefingId: string, rawMessageId: string): string {
   return `${briefingId}::${rawMessageId}`;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

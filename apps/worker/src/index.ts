@@ -1,7 +1,9 @@
 import { createApp } from "./app";
-import { createSummaryAdapterFromEnv } from "./ai";
+import { createEventReviewAdapterFromEnv, createSummaryAdapterFromEnv } from "./ai";
 import { publishDueBriefingEditions } from "./editions";
+import { processQueueMessage } from "./processor";
 import { D1Repository } from "./repository";
+import { runRetentionCleanup } from "./retention";
 import { pollApifySourceRuns, refreshEnabledSources } from "./sources";
 import type { Env, ProcessingJobMessage } from "./types";
 
@@ -14,12 +16,18 @@ export default {
   },
   async queue(batch: MessageBatch<ProcessingJobMessage>, env: Env): Promise<void> {
     const repo = new D1Repository(env.DB);
+    const summaryAdapter = createSummaryAdapterFromEnv(env, repo);
+    const reviewAdapter = createEventReviewAdapterFromEnv(env, repo);
     for (const message of batch.messages) {
       try {
-        await repo.completeProcessingJob(message.body.jobId, new Date());
+        await processQueueMessage(repo, message.body, new Date(), summaryAdapter, reviewAdapter);
         message.ack();
-      } catch {
-        message.ack();
+      } catch (error) {
+        console.error("Could not process queue job", {
+          jobId: message.body.jobId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        message.retry();
       }
     }
   }
@@ -27,6 +35,12 @@ export default {
 
 async function refreshEnabledPublicSources(env: Env): Promise<void> {
   const repo = new D1Repository(env.DB);
+  try {
+    await runRetentionCleanup(repo, env.RAW_ARCHIVE, new Date());
+  } catch (error) {
+    console.warn("Could not run retention cleanup", error);
+  }
+
   try {
     await publishDueBriefingEditions({
       repo,

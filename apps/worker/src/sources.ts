@@ -10,6 +10,7 @@ import { ingestPublicTelegramChannel, type PublicTelegramIngestResult } from "./
 import type { Env, ProcessingJobMessage, Repository, SourceRecord, SourceRunRecord } from "./types";
 
 const RSS_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const TELEGRAM_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const X_MAX_ITEMS = 20;
 const GOOGLE_NEWS_MAX_ITEMS_PER_QUERY = 15;
@@ -33,6 +34,7 @@ export interface SourceRefreshInput {
   env?: Partial<Env>;
   fetcher?: typeof fetch;
   now?: Date;
+  force?: boolean;
 }
 
 export async function addSourceFromInput(input: SourceRefreshInput & { sourceInput: string }): Promise<SourceIngestResult> {
@@ -58,18 +60,18 @@ export async function refreshEnabledSources(input: SourceRefreshInput): Promise<
   const results: SourceIngestResult[] = [];
 
   for (const source of sources) {
-    if (source.provider === "telegram" && source.url) {
-      results.push(await ingestPublicTelegramChannel({ ...input, url: source.url }));
+    if (source.provider === "telegram" && source.url && (input.force || isDue(source.lastCheckedAt, now, TELEGRAM_REFRESH_INTERVAL_MS))) {
+      results.push(await ingestPublicTelegramChannel({ ...input, url: source.url, now }));
       continue;
     }
 
-    if (source.provider === "rss" && source.sourceUrl && isDue(source.lastCheckedAt, now, RSS_REFRESH_INTERVAL_MS)) {
+    if (source.provider === "rss" && source.sourceUrl && (input.force || isDue(source.lastCheckedAt, now, RSS_REFRESH_INTERVAL_MS))) {
       results.push(await ingestRssSource({ ...input, source, now }));
       continue;
     }
 
     if (source.provider === "apify") {
-      if (!isDue(source.lastCheckedAt, now, apifyRefreshIntervalMs(input.briefing))) continue;
+      if (!input.force && !isDue(source.lastCheckedAt, now, apifyRefreshIntervalMs(input.briefing))) continue;
       const active = await input.repo.listSourceRuns({
         sourceId: source.id,
         states: ["queued", "running"],
@@ -165,7 +167,8 @@ async function ingestRssSource(input: SourceRefreshInput & { source: SourceRecor
     rawPayloadKey
   });
   const result = await persistMessages({ ...input, messages, now });
-  await markSourceEvent(input.repo, input.briefing.id, now);
+  await markSourceFetch(input.repo, input.briefing.id, now);
+  if (result.imported > 0) await markImportedMessage(input.repo, input.briefing.id, now);
   await input.repo.updateSourceState({
     sourceId: input.source.id,
     lastCheckedAt: now.toISOString(),
@@ -222,6 +225,7 @@ async function startApifySourceRun(input: SourceRefreshInput & {
     lastCheckedAt: now.toISOString(),
     lastError: nullError()
   }, now);
+  await markSourceFetch(input.repo, input.briefing.id, now);
 
   return {
     sourceId: input.source.id,
@@ -306,7 +310,7 @@ async function pollApifySourceRun(input: SourceRefreshInput & {
     return;
   }
 
-  await persistMessages({ ...input, messages, now });
+  const result = await persistMessages({ ...input, messages, now });
   await input.repo.updateSourceRun({
     id: input.run.id,
     state: "succeeded",
@@ -322,7 +326,8 @@ async function pollApifySourceRun(input: SourceRefreshInput & {
     lastSeenAt: messages[0]?.receivedAt ?? now.toISOString(),
     lastError: nullError()
   }, now);
-  await markSourceEvent(input.repo, input.briefing.id, now);
+  await markSourceFetch(input.repo, input.briefing.id, now);
+  if (result.imported > 0) await markImportedMessage(input.repo, input.briefing.id, now);
 }
 
 function describeUnusableApifyDataset(
@@ -359,7 +364,7 @@ async function persistMessages(input: SourceRefreshInput & {
   now: Date;
 }): Promise<Omit<SourceIngestResult, "sourceId" | "url">> {
   let imported = 0;
-  const queued = 0;
+  let queued = 0;
   let skipped = 0;
 
   for (const message of input.messages) {
@@ -379,7 +384,10 @@ async function persistMessages(input: SourceRefreshInput & {
     }
 
     await input.repo.saveRawMessage(input.briefing.id, persistedMessage, input.now);
+    const jobId = await input.repo.createProcessingJob(input.briefing.id, persistedMessage.id, input.now);
+    await input.queue.send({ jobId, briefingId: input.briefing.id, rawMessageId: persistedMessage.id });
     imported += 1;
+    queued += 1;
   }
 
   return {
@@ -391,7 +399,14 @@ async function persistMessages(input: SourceRefreshInput & {
   };
 }
 
-async function markSourceEvent(repo: Repository, briefingId: string, now: Date): Promise<void> {
+async function markSourceFetch(repo: Repository, briefingId: string, now: Date): Promise<void> {
+  await repo.setSetting("last_source_fetch_at", now.toISOString(), now);
+  await repo.setSetting(`last_source_fetch_at:${briefingId}`, now.toISOString(), now);
+}
+
+async function markImportedMessage(repo: Repository, briefingId: string, now: Date): Promise<void> {
+  await repo.setSetting("last_imported_message_at", now.toISOString(), now);
+  await repo.setSetting(`last_imported_message_at:${briefingId}`, now.toISOString(), now);
   await repo.setSetting("last_source_event_at", now.toISOString(), now);
   await repo.setSetting(`last_source_event_at:${briefingId}`, now.toISOString(), now);
 }
