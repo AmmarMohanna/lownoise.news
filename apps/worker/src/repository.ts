@@ -1366,11 +1366,12 @@ export class D1Repository implements Repository {
     const rows = await all<{ raw_payload_key: string }>(
       this.db
         .prepare(
-          `SELECT DISTINCT raw_payload_key
+          `SELECT raw_payload_key
           FROM raw_messages
-          WHERE expires_at <= ?
-            AND raw_payload_key IS NOT NULL
-            AND raw_payload_key != ''`
+          WHERE raw_payload_key IS NOT NULL
+            AND raw_payload_key != ''
+          GROUP BY raw_payload_key
+          HAVING MAX(expires_at) <= ?`
         )
         .bind(now.toISOString())
     );
@@ -2314,12 +2315,15 @@ export class InMemoryRepository implements Repository {
   }
 
   async listExpiredRawPayloadKeys(now = new Date()): Promise<string[]> {
-    return Array.from(new Set(
-      Array.from(this.rawMessages.values())
-        .filter((message) => new Date(message.expiresAt).getTime() <= now.getTime())
-        .map((message) => message.rawPayloadKey)
-        .filter((key): key is string => Boolean(key))
-    ));
+    const latestExpiryByKey = new Map<string, number>();
+    for (const message of this.rawMessages.values()) {
+      if (!message.rawPayloadKey) continue;
+      const current = latestExpiryByKey.get(message.rawPayloadKey) ?? Number.NEGATIVE_INFINITY;
+      latestExpiryByKey.set(message.rawPayloadKey, Math.max(current, new Date(message.expiresAt).getTime()));
+    }
+    return Array.from(latestExpiryByKey)
+      .filter(([, latestExpiry]) => latestExpiry <= now.getTime())
+      .map(([key]) => key);
   }
 
   async deleteExpired(now = new Date()): Promise<number> {

@@ -49,12 +49,10 @@ npx pnpm@10.12.1 dev
 For deployment:
 
 ```sh
-npx pnpm@10.12.1 run setup
-npx pnpm@10.12.1 --filter @distilled/worker db:migrate:remote
-npx pnpm@10.12.1 run deploy
+npx pnpm@10.12.1 run setup -- --provision-cloudflare --apply-remote-migrations --deploy
 ```
 
-`npx pnpm@10.12.1 run setup` creates local `.env` and Worker `.dev.vars` files when needed, generates missing app secrets, and can run extra checks with `-- --check`. Update `apps/worker/wrangler.toml` with real Cloudflare resource IDs before production deploy. Enabled sources are refreshed by the Worker cron trigger.
+`npx pnpm@10.12.1 run setup` creates local `.env` and Worker `.dev.vars` files when needed and generates missing app secrets. With `-- --provision-cloudflare`, it also creates or verifies the D1 database, R2 bucket, processing queue, dead-letter queue, writes `apps/worker/wrangler.toml`, uploads Worker secrets, applies migrations when requested, and deploys when requested. Run `npx pnpm@10.12.1 run setup -- --check` to verify Wrangler auth and dry-run deployment.
 
 `distilled.news` is the canonical production domain. `lownoise.news` and `www.lownoise.news` are kept as legacy routes that redirect to `https://distilled.news`.
 
@@ -72,8 +70,6 @@ See `.env.example` for descriptions.
 - `EMAIL_FROM`
 - `PUBLIC_WEB_BASE_URL`
 
-`CLOUDFLARE_ZONE_ID` is only needed for custom-domain routing.
-
 `EMAIL_FROM` must use a sender domain that is onboarded in Cloudflare Email
 Sending. For public user registration, Cloudflare must also allow sending to
 arbitrary recipients; Email Routing-only bindings can send only to verified
@@ -81,13 +77,14 @@ destination addresses in the Cloudflare account.
 
 ## First Self-Hosted Setup
 
-1. Deploy the Worker.
-2. Open the admin page.
-3. Use `ADMIN_SETUP_TOKEN` once to create the first verified admin account.
-4. Add sources such as `t: LebUpdate`, `rss: https://example.com/feed.xml`, `news: Lebanon Electricity`, or `x: NASA`.
-5. Write the interest profile and save.
-6. Use `fetch latest` once to validate ingestion.
-7. Share the username-scoped public feed URL when ready.
+1. Fill `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `PUBLIC_WEB_BASE_URL`, and any optional AI/Apify/email values in `.env`.
+2. Run `npx pnpm@10.12.1 run setup -- --provision-cloudflare --apply-remote-migrations --deploy`.
+3. Open the admin page.
+4. Use `ADMIN_SETUP_TOKEN` once to create the first verified admin account.
+5. Add sources such as `t: LebUpdate`, `rss: https://example.com/feed.xml`, `news: Lebanon Electricity`, or `x: NASA`.
+6. Write the interest profile and save.
+7. Use `fetch latest` once to validate ingestion.
+8. Share the username-scoped public feed URL when ready.
 
 Default Apify actors:
 

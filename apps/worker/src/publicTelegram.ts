@@ -19,6 +19,7 @@ export interface PublicTelegramIngestResult {
 export interface PublicTelegramIngestInput {
   briefing: BriefingConfig;
   url: string;
+  source?: SourceRecord;
   repo: Repository;
   bucket: { put(key: string, value: string, options?: unknown): Promise<unknown> };
   queue: { send(message: ProcessingJobMessage): Promise<unknown> };
@@ -50,7 +51,7 @@ export async function ingestPublicTelegramChannel(input: PublicTelegramIngestInp
     retentionDays: input.briefing.retentionDays
   }).map((message) => ({ ...message, rawPayloadKey }));
 
-  let source: SourceRecord | undefined;
+  let source: SourceRecord | undefined = input.source;
   let imported = 0;
   let queued = 0;
   let skipped = 0;

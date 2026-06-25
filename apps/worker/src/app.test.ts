@@ -5,9 +5,9 @@ import { publishDueBriefingEditions } from "./editions";
 import { processQueueMessage } from "./processor";
 import { ingestPublicTelegramChannel } from "./publicTelegram";
 import { InMemoryRepository } from "./repository";
-import { pollApifySourceRuns } from "./sources";
+import { enqueueDueSourceRefreshJobs, pollApifySourceRuns } from "./sources";
 import type { BriefingEdition, BriefingItem, EventReviewAdapter, NormalizedMessage, SummaryAdapter } from "@distilled/core";
-import type { Env, ProcessingJobMessage } from "./types";
+import type { DistilledQueueMessage, Env, ProcessingJobMessage } from "./types";
 
 class FakeBucket {
   objects = new Map<string, string>();
@@ -25,6 +25,14 @@ class FakeQueue {
   messages: ProcessingJobMessage[] = [];
 
   async send(message: ProcessingJobMessage): Promise<void> {
+    this.messages.push(message);
+  }
+}
+
+class FakeDistilledQueue {
+  messages: DistilledQueueMessage[] = [];
+
+  async send(message: DistilledQueueMessage): Promise<void> {
     this.messages.push(message);
   }
 }
@@ -1176,6 +1184,45 @@ describe("worker app accounts", () => {
     expect(await response.json()).toEqual({ error: "APIFY_API_TOKEN is not configured." });
   });
 
+  it("enqueues due source refreshes once and leases them with lastCheckedAt", async () => {
+    const repo = new InMemoryRepository();
+    const queue = new FakeDistilledQueue();
+    const app = createApp({ repository: repo, bucket: new FakeBucket(), queue: new FakeQueue() });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    const source = await repo.upsertConfiguredSource({
+      briefingId: briefing!.id,
+      title: "Example RSS",
+      provider: "rss",
+      kind: "rss_feed",
+      sourceUrl: "https://example.com/feed.xml",
+      enabled: true
+    }, new Date("2026-06-18T08:00:00.000Z"));
+
+    const first = await enqueueDueSourceRefreshJobs({
+      briefing: briefing!,
+      repo,
+      queue,
+      now: new Date("2026-06-18T08:05:00.000Z")
+    });
+    const leased = await repo.getSource(source.id);
+    const second = await enqueueDueSourceRefreshJobs({
+      briefing: briefing!,
+      repo,
+      queue,
+      now: new Date("2026-06-18T08:06:00.000Z")
+    });
+
+    expect(first).toBe(1);
+    expect(second).toBe(0);
+    expect(queue.messages).toEqual([
+      { type: "refresh_source", briefingId: briefing!.id, sourceId: source.id, force: undefined }
+    ]);
+    expect(leased?.lastCheckedAt).toBe("2026-06-18T08:05:00.000Z");
+  });
+
   it("starts, polls, imports, and processes an Apify Google News source", async () => {
     const repo = new InMemoryRepository();
     const bucket = new FakeBucket();
@@ -1634,6 +1681,56 @@ describe("worker app accounts", () => {
     expect(await authorized.json()).toEqual({ deleted: 1, archivesDeleted: 1, archiveDeleteFailures: 0 });
     expect(await repo.getRawMessage(message.id)).toBeNull();
     expect(bucket.objects.has(archiveKey)).toBe(false);
+  });
+
+  it("keeps shared R2 archives while any referencing raw message is still active", async () => {
+    const repo = new InMemoryRepository();
+    const bucket = new FakeBucket();
+    const app = createApp({ repository: repo, bucket, queue: new FakeQueue() });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Owner User");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    const archiveKey = "rss/briefing_1/source/shared.xml";
+    await bucket.put(archiveKey, "<rss>mixed</rss>");
+    const expired: NormalizedMessage = {
+      id: `${briefing!.id}::expired_shared`,
+      source: { id: "src_shared", title: "Shared Source", type: "channel", provider: "rss", kind: "rss_feed" },
+      messageId: "expired_shared",
+      text: "Expired source post.",
+      links: [],
+      media: [],
+      postedAt: "2026-05-01T10:00:00.000Z",
+      receivedAt: "2026-05-01T10:00:10.000Z",
+      sourceUrl: "https://example.com/feed.xml#old",
+      rawPayloadKey: archiveKey,
+      expiresAt: "2026-05-16T10:00:00.000Z"
+    };
+    const active: NormalizedMessage = {
+      ...expired,
+      id: `${briefing!.id}::active_shared`,
+      messageId: "active_shared",
+      text: "Active source post.",
+      postedAt: "2026-06-20T10:00:00.000Z",
+      receivedAt: "2026-06-20T10:00:10.000Z",
+      sourceUrl: "https://example.com/feed.xml#new",
+      expiresAt: "2026-07-05T10:00:00.000Z"
+    };
+    const source = await repo.upsertSourceFromMessage(briefing!.id, expired);
+    await repo.saveRawMessage(briefing!.id, { ...expired, source: { ...expired.source, id: source.id } });
+    await repo.saveRawMessage(briefing!.id, { ...active, source: { ...active.source, id: source.id } });
+
+    const authorized = await app.request(
+      "/api/internal/retention/run",
+      { method: "POST", headers: { "x-distilled-internal": "internal-secret" } },
+      env()
+    );
+
+    expect(authorized.status).toBe(200);
+    expect(await authorized.json()).toEqual({ deleted: 1, archivesDeleted: 0, archiveDeleteFailures: 0 });
+    expect(await repo.getRawMessage(expired.id)).toBeNull();
+    expect(await repo.getRawMessage(active.id)).not.toBeNull();
+    expect(bucket.objects.has(archiveKey)).toBe(true);
   });
 
   it("lets admins view and manage accounts while preserving at least one admin", async () => {

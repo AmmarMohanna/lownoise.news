@@ -7,7 +7,14 @@ import {
   type DetectedSourceInput
 } from "@distilled/connectors";
 import { ingestPublicTelegramChannel, type PublicTelegramIngestResult } from "./publicTelegram";
-import type { Env, ProcessingJobMessage, Repository, SourceRecord, SourceRunRecord } from "./types";
+import type {
+  Env,
+  ProcessingJobMessage,
+  Repository,
+  SourceRecord,
+  SourceRefreshJobMessage,
+  SourceRunRecord
+} from "./types";
 
 const RSS_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TELEGRAM_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -37,6 +44,14 @@ export interface SourceRefreshInput {
   force?: boolean;
 }
 
+export interface SourceRefreshDispatchInput {
+  briefing: BriefingConfig;
+  repo: Repository;
+  queue: { send(message: SourceRefreshJobMessage): Promise<unknown> };
+  now?: Date;
+  force?: boolean;
+}
+
 export async function addSourceFromInput(input: SourceRefreshInput & { sourceInput: string }): Promise<SourceIngestResult> {
   const detected = detectSourceInput(input.sourceInput);
   if (detected.provider === "telegram") {
@@ -60,31 +75,68 @@ export async function refreshEnabledSources(input: SourceRefreshInput): Promise<
   const results: SourceIngestResult[] = [];
 
   for (const source of sources) {
-    if (source.provider === "telegram" && source.url && (input.force || isDue(source.lastCheckedAt, now, TELEGRAM_REFRESH_INTERVAL_MS))) {
-      results.push(await ingestPublicTelegramChannel({ ...input, url: source.url, now }));
-      continue;
-    }
-
-    if (source.provider === "rss" && source.sourceUrl && (input.force || isDue(source.lastCheckedAt, now, RSS_REFRESH_INTERVAL_MS))) {
-      results.push(await ingestRssSource({ ...input, source, now }));
-      continue;
-    }
-
-    if (source.provider === "apify") {
-      if (!input.force && !isDue(source.lastCheckedAt, now, apifyRefreshIntervalMs(input.briefing))) continue;
-      const active = await input.repo.listSourceRuns({
-        sourceId: source.id,
-        states: ["queued", "running"],
-        limit: 1
-      });
-      if (active.length === 0) {
-        const result = await startCappedApifySourceRun({ ...input, source, now });
-        if (result) results.push(result);
-      }
-    }
+    if (!input.force && !isSourceRefreshDue(input.briefing, source, now)) continue;
+    const result = await refreshSource({ ...input, source, now });
+    if (result) results.push(result);
   }
 
   return results;
+}
+
+export async function enqueueDueSourceRefreshJobs(input: SourceRefreshDispatchInput): Promise<number> {
+  if (input.briefing.paused) return 0;
+
+  const now = input.now ?? new Date();
+  const sources = (await input.repo.listSources(input.briefing.id)).filter((source) => source.enabled);
+  let enqueued = 0;
+
+  for (const source of sources) {
+    if (!input.force && !isSourceRefreshDue(input.briefing, source, now)) continue;
+    if (source.provider === "apify" && await hasActiveApifyRun(input.repo, source.id)) continue;
+
+    await input.repo.updateSourceState({
+      sourceId: source.id,
+      lastCheckedAt: now.toISOString(),
+      lastError: nullError()
+    }, now);
+    await input.queue.send({
+      type: "refresh_source",
+      briefingId: input.briefing.id,
+      sourceId: source.id,
+      force: input.force || undefined
+    });
+    enqueued += 1;
+  }
+
+  return enqueued;
+}
+
+export async function refreshSourceById(input: SourceRefreshInput & { sourceId: string }): Promise<SourceIngestResult | undefined> {
+  const source = await input.repo.getSource(input.sourceId);
+  if (!source) throw new Error("Source not found.");
+  return refreshSource({ ...input, source });
+}
+
+async function refreshSource(input: SourceRefreshInput & { source: SourceRecord }): Promise<SourceIngestResult | undefined> {
+  if (input.briefing.paused || !input.source.enabled) return undefined;
+  const now = input.now ?? new Date();
+
+  if (input.source.provider === "telegram") {
+    if (!input.source.url) throw new Error("Telegram source URL is missing.");
+    return ingestPublicTelegramChannel({ ...input, source: input.source, url: input.source.url, now });
+  }
+
+  if (input.source.provider === "rss") {
+    if (!input.source.sourceUrl && !input.source.url) throw new Error("RSS source URL is missing.");
+    return ingestRssSource({ ...input, source: input.source, now });
+  }
+
+  if (input.source.provider === "apify") {
+    if (await hasActiveApifyRun(input.repo, input.source.id)) return undefined;
+    return startCappedApifySourceRun({ ...input, source: input.source, now });
+  }
+
+  throw new Error(`Unsupported source provider: ${input.source.provider}`);
 }
 
 export async function pollApifySourceRuns(input: Omit<SourceRefreshInput, "briefing">): Promise<void> {
@@ -462,6 +514,22 @@ function encodeApifyActorId(actorId: string): string {
 function isDue(lastCheckedAt: string | undefined, now: Date, intervalMs: number): boolean {
   if (!lastCheckedAt) return true;
   return now.getTime() - new Date(lastCheckedAt).getTime() >= intervalMs;
+}
+
+function isSourceRefreshDue(briefing: BriefingConfig, source: SourceRecord, now: Date): boolean {
+  if (source.provider === "telegram") return Boolean(source.url) && isDue(source.lastCheckedAt, now, TELEGRAM_REFRESH_INTERVAL_MS);
+  if (source.provider === "rss") return Boolean(source.sourceUrl ?? source.url) && isDue(source.lastCheckedAt, now, RSS_REFRESH_INTERVAL_MS);
+  if (source.provider === "apify") return isDue(source.lastCheckedAt, now, apifyRefreshIntervalMs(briefing));
+  return false;
+}
+
+async function hasActiveApifyRun(repo: Repository, sourceId: string): Promise<boolean> {
+  const active = await repo.listSourceRuns({
+    sourceId,
+    states: ["queued", "running"],
+    limit: 1
+  });
+  return active.length > 0;
 }
 
 function apifyRefreshIntervalMs(briefing: BriefingConfig): number {

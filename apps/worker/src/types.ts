@@ -58,7 +58,7 @@ export interface ProcessingJobRecord {
 export interface Env {
   DB: D1Database;
   RAW_ARCHIVE: R2Bucket;
-  PROCESSING_QUEUE: Queue<ProcessingJobMessage>;
+  PROCESSING_QUEUE: Queue<DistilledQueueMessage>;
   EMAIL?: SendEmail;
   ASSETS?: Fetcher;
   ADMIN_SESSION_SECRET?: string;
@@ -86,10 +86,20 @@ export interface Env {
 }
 
 export interface ProcessingJobMessage {
+  type?: "process_raw_message";
   jobId: string;
   briefingId: string;
   rawMessageId: string;
 }
+
+export interface SourceRefreshJobMessage {
+  type: "refresh_source";
+  briefingId: string;
+  sourceId: string;
+  force?: boolean;
+}
+
+export type DistilledQueueMessage = ProcessingJobMessage | SourceRefreshJobMessage;
 
 export interface SourceRecord {
   id: string;
