@@ -348,7 +348,7 @@ function writeWranglerConfig(path, resources, env) {
     "",
     "[[queues.consumers]]",
     `queue = ${tomlString(resources.processingQueueName)}`,
-    `max_batch_size = 2`,
+    `max_batch_size = 1`,
     `max_batch_timeout = 5`,
     `max_retries = 4`,
     `retry_delay = 60`,

@@ -9,6 +9,9 @@ import type { DistilledQueueMessage, Env, ProcessingJobMessage, Repository, Sour
 
 const app = createApp();
 const MAX_QUEUE_ATTEMPTS = 5;
+const STALE_PROCESSING_JOB_REQUEUE_AGE_MS = 10 * 60 * 1000;
+const STALE_PROCESSING_JOB_REQUEUE_LIMIT = 25;
+const SLOW_QUEUE_JOB_MS = 10_000;
 
 export default {
   fetch: app.fetch,
@@ -20,8 +23,21 @@ export default {
     const summaryAdapter = createSummaryAdapterFromEnv(env, repo);
     const reviewAdapter = createEventReviewAdapterFromEnv(env, repo);
     for (const message of batch.messages) {
+      const startedAt = Date.now();
+      const bodyType = queueBodyType(message.body);
+      const bodyId = queueBodyId(message.body);
       try {
         await processDistilledQueueMessage(repo, env, message.body, summaryAdapter, reviewAdapter);
+        const durationMs = Date.now() - startedAt;
+        if (durationMs >= SLOW_QUEUE_JOB_MS) {
+          console.warn("Slow queue job completed", {
+            messageId: message.id,
+            attempts: message.attempts,
+            bodyType,
+            bodyId,
+            durationMs
+          });
+        }
         message.ack();
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -30,8 +46,9 @@ export default {
         console.error(shouldQuarantine ? "Quarantined queue job" : "Retrying queue job", {
           messageId: message.id,
           attempts: message.attempts,
-          bodyType: queueBodyType(message.body),
-          bodyId: queueBodyId(message.body),
+          bodyType,
+          bodyId,
+          durationMs: Date.now() - startedAt,
           permanent: isPermanentQueueError(error),
           quarantined: shouldQuarantine,
           error: errorMessage
@@ -180,6 +197,13 @@ async function runScheduledMaintenance(env: Env): Promise<void> {
     console.warn("Could not poll Apify source runs", error);
   }
 
+  try {
+    const rescued = await rescueStaleProcessingJobs(repo, env.PROCESSING_QUEUE, now);
+    if (rescued > 0) console.log("Requeued stale processing jobs", { rescued });
+  } catch (error) {
+    console.warn("Could not requeue stale processing jobs", error);
+  }
+
   const briefings = await repo.listBriefings();
   let enqueued = 0;
 
@@ -196,4 +220,32 @@ async function runScheduledMaintenance(env: Env): Promise<void> {
     }
   }
   if (enqueued > 0) console.log("Enqueued scheduled source refresh jobs", { enqueued });
+}
+
+async function rescueStaleProcessingJobs(
+  repo: Repository,
+  queue: { send(message: ProcessingJobMessage): Promise<unknown> },
+  now: Date
+): Promise<number> {
+  const staleBefore = new Date(now.getTime() - STALE_PROCESSING_JOB_REQUEUE_AGE_MS).toISOString();
+  const jobs = await repo.listProcessingJobs({
+    states: ["queued"],
+    updatedBefore: staleBefore,
+    order: "oldest",
+    limit: STALE_PROCESSING_JOB_REQUEUE_LIMIT
+  });
+  let rescued = 0;
+
+  for (const job of jobs) {
+    await queue.send({
+      type: "process_raw_message",
+      jobId: job.id,
+      briefingId: job.briefingId,
+      rawMessageId: job.rawMessageId
+    });
+    await repo.requeueProcessingJob(job.id, now);
+    rescued += 1;
+  }
+
+  return rescued;
 }

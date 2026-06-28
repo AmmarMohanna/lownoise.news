@@ -6,6 +6,8 @@ import {
 } from "@distilled/connectors";
 import type { ProcessingJobMessage, Repository, SourceRecord } from "./types";
 
+const TELEGRAM_FETCH_TIMEOUT_MS = 12_000;
+
 export interface PublicTelegramIngestResult {
   sourceId: string;
   title?: string;
@@ -32,11 +34,11 @@ export async function ingestPublicTelegramChannel(input: PublicTelegramIngestInp
   const fetcher = input.fetcher ?? fetch;
   const now = input.now ?? new Date();
   const channel = parsePublicTelegramChannelUrl(input.url);
-  const response = await fetcher(channel.widgetUrl, {
+  const response = await fetchWithTimeout(fetcher, channel.widgetUrl, {
     headers: {
       "user-agent": "Distilled.news public Telegram source reader"
     }
-  });
+  }, TELEGRAM_FETCH_TIMEOUT_MS);
 
   if (!response.ok) {
     throw new Error(`Could not fetch ${channel.publicUrl}: ${response.status}`);
@@ -107,6 +109,19 @@ export async function ingestPublicTelegramChannel(input: PublicTelegramIngestInp
     queued,
     skipped
   };
+}
+
+async function fetchWithTimeout(fetcher: typeof fetch, url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetcher(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw new Error(`Timed out fetching ${url}`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function refreshPublicTelegramSources(input: Omit<PublicTelegramIngestInput, "url">): Promise<PublicTelegramIngestResult[]> {

@@ -32,6 +32,7 @@ const GOOGLE_NEWS_APIFY_FALLBACK_MAX_ITEMS = 20;
 const GOOGLE_NEWS_APIFY_FALLBACK_ESTIMATED_COST_USD = APIFY_MINIMUM_RUN_CHARGE_USD;
 const GOOGLE_NEWS_APIFY_FALLBACK_SOURCE_DAILY_COST_LIMIT_USD = 0.08;
 const GOOGLE_NEWS_APIFY_FALLBACK_BRIEFING_DAILY_COST_LIMIT_USD = 0.40;
+const PROCESSING_BACKLOG_REFRESH_PAUSE_LIMIT = 500;
 const X_MAX_ITEMS = 20;
 const X_PRICE_PER_1000_TWEETS_USD = 0.18;
 
@@ -93,6 +94,7 @@ export async function refreshEnabledSources(input: SourceRefreshInput): Promise<
 
 export async function enqueueDueSourceRefreshJobs(input: SourceRefreshDispatchInput): Promise<number> {
   if (input.briefing.paused) return 0;
+  if (!input.force && await hasLargeProcessingBacklog(input.repo, input.briefing.id)) return 0;
 
   const now = input.now ?? new Date();
   const sources = (await input.repo.listSources(input.briefing.id)).filter((source) => source.enabled);
@@ -615,6 +617,15 @@ async function hasActiveApifyRun(repo: Repository, sourceId: string): Promise<bo
     limit: 1
   });
   return active.length > 0;
+}
+
+async function hasLargeProcessingBacklog(repo: Repository, briefingId: string): Promise<boolean> {
+  const jobs = await repo.listProcessingJobs({
+    briefingId,
+    states: ["queued"],
+    limit: PROCESSING_BACKLOG_REFRESH_PAUSE_LIMIT
+  });
+  return jobs.length >= PROCESSING_BACKLOG_REFRESH_PAUSE_LIMIT;
 }
 
 async function googleNewsApifyFallbackSkipReason(input: SourceRefreshInput & {

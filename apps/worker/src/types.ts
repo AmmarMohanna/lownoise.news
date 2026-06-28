@@ -235,6 +235,8 @@ export interface Repository {
     briefingId?: string;
     states?: ProcessingJobState[];
     limit?: number;
+    updatedBefore?: string;
+    order?: "newest" | "oldest";
   }): Promise<ProcessingJobRecord[]>;
   requeueProcessingJob(jobId: string, now?: Date): Promise<void>;
   getExistingItems(briefingId: string, now?: Date): Promise<BriefingItem[]>;

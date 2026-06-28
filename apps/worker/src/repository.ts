@@ -37,6 +37,7 @@ type DbValue = string | number | null;
 
 const FIXED_RETENTION_DAYS = 15;
 const DEFAULT_DAILY_BUDGET_USD = 1;
+const PROCESSOR_EXISTING_ITEM_QUERY_LIMIT = 120;
 
 interface AccountRow {
   id: string;
@@ -909,6 +910,8 @@ export class D1Repository implements Repository {
     briefingId?: string;
     states?: ProcessingJobState[];
     limit?: number;
+    updatedBefore?: string;
+    order?: "newest" | "oldest";
   }): Promise<ProcessingJobRecord[]> {
     const states = input?.states?.length ? input.states : ["queued", "completed", "failed"];
     const placeholders = states.map(() => "?").join(", ");
@@ -922,8 +925,12 @@ export class D1Repository implements Repository {
       sql += " AND briefing_id = ?";
       values.push(input.briefingId);
     }
+    if (input?.updatedBefore) {
+      sql += " AND updated_at < ?";
+      values.push(input.updatedBefore);
+    }
 
-    sql += " ORDER BY updated_at DESC LIMIT ?";
+    sql += ` ORDER BY updated_at ${input?.order === "oldest" ? "ASC" : "DESC"} LIMIT ?`;
     values.push(input?.limit ?? 50);
 
     const rows = await all<ProcessingJobRow>(this.db.prepare(sql).bind(...values));
@@ -938,21 +945,24 @@ export class D1Repository implements Repository {
   }
 
   async getExistingItems(briefingId: string, now = new Date()): Promise<BriefingItem[]> {
-    return this.listBriefingItems(briefingId, true, now);
+    return this.listBriefingItems(briefingId, true, now, true, PROCESSOR_EXISTING_ITEM_QUERY_LIMIT);
   }
 
   private async listBriefingItems(
     briefingId: string,
     includeEvidence: boolean,
     now = new Date(),
-    collapseDuplicates = true
+    collapseDuplicates = true,
+    limit?: number
   ): Promise<BriefingItem[]> {
+    const bindings: DbValue[] = [briefingId, now.toISOString()];
+    if (limit) bindings.push(limit);
     const rows = await all<BriefingItemRow>(
       this.db
         .prepare(
-          "SELECT id, cluster_id, event_key, summary, item_at, updated_at, expires_at, merged_update_count FROM briefing_items WHERE briefing_id = ? AND expires_at > ? ORDER BY item_at DESC"
+          `SELECT id, cluster_id, event_key, summary, item_at, updated_at, expires_at, merged_update_count FROM briefing_items WHERE briefing_id = ? AND expires_at > ? ORDER BY item_at DESC${limit ? " LIMIT ?" : ""}`
         )
-        .bind(briefingId, now.toISOString())
+        .bind(...bindings)
     );
     if (!includeEvidence) {
       return collapseBriefingItemsByStoredEventKey(rows.map((row) => ({ ...rowToBriefingItem(row), evidence: [] })));
@@ -2062,12 +2072,15 @@ export class InMemoryRepository implements Repository {
     briefingId?: string;
     states?: ProcessingJobState[];
     limit?: number;
+    updatedBefore?: string;
+    order?: "newest" | "oldest";
   }): Promise<ProcessingJobRecord[]> {
     const allowed = new Set(input?.states ?? ["queued", "completed", "failed"]);
     return Array.from(this.jobs.values())
       .filter((job) => (!input?.briefingId || job.briefingId === input.briefingId) && allowed.has(job.state))
+      .filter((job) => !input?.updatedBefore || job.updatedAt < input.updatedBefore)
       .slice()
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .sort((left, right) => input?.order === "oldest" ? left.updatedAt.localeCompare(right.updatedAt) : right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, input?.limit ?? 50)
       .map((job) => ({
         id: job.id,
@@ -2092,7 +2105,7 @@ export class InMemoryRepository implements Repository {
     const briefing = await this.getBriefingById(briefingId);
     const items = Array.from(this.itemsByBriefing.get(briefingId)?.values() ?? []).filter(
       (item) => new Date(item.expiresAt).getTime() > now.getTime()
-    );
+    ).sort((left, right) => right.itemAt.localeCompare(left.itemAt)).slice(0, PROCESSOR_EXISTING_ITEM_QUERY_LIMIT);
     return collapseDuplicateBriefingItems(items, briefing ?? undefined);
   }
 

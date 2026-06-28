@@ -1375,6 +1375,37 @@ describe("worker app accounts", () => {
     expect(leased?.lastCheckedAt).toBe("2026-06-18T08:05:00.000Z");
   });
 
+  it("skips scheduled source refreshes while a feed has a large processing backlog", async () => {
+    const repo = new InMemoryRepository();
+    const queue = new FakeDistilledQueue();
+    const app = createApp({ repository: repo, bucket: new FakeBucket(), queue: new FakeQueue() });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    await repo.upsertConfiguredSource({
+      briefingId: briefing!.id,
+      title: "Example RSS",
+      provider: "rss",
+      kind: "rss_feed",
+      sourceUrl: "https://example.com/feed.xml",
+      enabled: true
+    }, new Date("2026-06-18T08:00:00.000Z"));
+    for (let index = 0; index < 500; index += 1) {
+      await repo.createProcessingJob(briefing!.id, `raw_${index}`, new Date("2026-06-18T08:00:00.000Z"));
+    }
+
+    const enqueued = await enqueueDueSourceRefreshJobs({
+      briefing: briefing!,
+      repo,
+      queue,
+      now: new Date("2026-06-18T09:00:00.000Z")
+    });
+
+    expect(enqueued).toBe(0);
+    expect(queue.messages).toHaveLength(0);
+  });
+
   it("backs off failing Google News sources and skips quarantined source refreshes", async () => {
     const repo = new InMemoryRepository();
     const queue = new FakeDistilledQueue();
