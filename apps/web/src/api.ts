@@ -227,6 +227,46 @@ export async function updateAdminAccount(
   );
 }
 
+export async function deleteAdminAccount(
+  accountId: string
+): Promise<{ accounts: AccountWithStats[]; briefings: BriefingConfig[] }> {
+  return requestJson<{ accounts: AccountWithStats[]; briefings: BriefingConfig[] }>(
+    `/api/admin/accounts/${encodeURIComponent(accountId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+}
+
+export async function listAdminBriefings(): Promise<BriefingConfig[]> {
+  const payload = await requestJson<{ briefings: BriefingConfig[] }>("/api/admin/briefings");
+  return payload.briefings;
+}
+
+export async function updateAdminBriefing(
+  briefingId: string,
+  input: { paused?: boolean }
+): Promise<{ briefing: BriefingConfig; briefings: BriefingConfig[]; accounts: AccountWithStats[] }> {
+  return requestJson<{ briefing: BriefingConfig; briefings: BriefingConfig[]; accounts: AccountWithStats[] }>(
+    `/api/admin/briefings/${encodeURIComponent(briefingId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }
+  );
+}
+
+export async function deleteAdminBriefing(
+  briefingId: string
+): Promise<{ briefings: BriefingConfig[]; accounts: AccountWithStats[] }> {
+  return requestJson<{ briefings: BriefingConfig[]; accounts: AccountWithStats[] }>(
+    `/api/admin/briefings/${encodeURIComponent(briefingId)}`,
+    {
+      method: "DELETE"
+    }
+  );
+}
+
 export async function getFeed(username: string, slug: string): Promise<FeedPayload> {
   return requestJson<FeedPayload>(`/api/feed/${encodeURIComponent(username)}/${encodeURIComponent(slug)}`);
 }

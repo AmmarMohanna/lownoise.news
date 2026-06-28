@@ -99,6 +99,10 @@ const adminAccountUpdateSchema = z.object({
   disabled: z.boolean().optional()
 });
 
+const adminBriefingUpdateSchema = z.object({
+  paused: z.boolean().optional()
+});
+
 const FIXED_RETENTION_DAYS = 15;
 const FIXED_BRIEFING_TIME_OF_DAY = "00:00";
 
@@ -551,8 +555,35 @@ export function createApp(options: AppOptions = {}) {
     return c.json({ account: publicAccount(account), accounts: await repo.listAccounts() });
   });
 
+  app.delete("/api/admin/accounts/:accountId", async (c) => {
+    const repo = c.get("repo");
+    const target = await repo.getAccountById(c.req.param("accountId"));
+    if (!target) return c.json({ error: "account not found" }, 404);
+    if (target.id === c.get("account")!.id) return c.json({ error: "cannot delete the signed-in admin" }, 400);
+    if (target.role === "admin" && !target.disabledAt && (await repo.countAdmins()) <= 1) {
+      return c.json({ error: "keep at least one admin" }, 400);
+    }
+    await repo.deleteAccount(target.id);
+    return c.json({ accounts: await repo.listAccounts(), briefings: await repo.listBriefings() });
+  });
+
   app.get("/api/admin/briefings", async (c) => {
     return c.json({ briefings: await c.get("repo").listBriefings() });
+  });
+
+  app.patch("/api/admin/briefings/:briefingId", async (c) => {
+    const repo = c.get("repo");
+    const briefing = await repo.getBriefingById(c.req.param("briefingId"));
+    if (!briefing) return c.json({ error: "briefing not found" }, 404);
+    const input = adminBriefingUpdateSchema.parse(await c.req.json().catch(() => ({})));
+    const updated = input.paused === undefined
+      ? briefing
+      : await repo.upsertBriefing({ ...briefing, paused: input.paused });
+    return c.json({
+      briefing: updated,
+      briefings: await repo.listBriefings(),
+      accounts: await repo.listAccounts()
+    });
   });
 
   app.delete("/api/admin/briefings/:briefingId", async (c) => {
@@ -560,7 +591,7 @@ export function createApp(options: AppOptions = {}) {
     const briefing = await repo.getBriefingById(c.req.param("briefingId"));
     if (!briefing) return c.json({ error: "briefing not found" }, 404);
     await repo.deleteBriefing(briefing.id);
-    return c.json({ briefings: await repo.listBriefings() });
+    return c.json({ briefings: await repo.listBriefings(), accounts: await repo.listAccounts() });
   });
 
   app.get("/api/explore/feeds", async (c) => {

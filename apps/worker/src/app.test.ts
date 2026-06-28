@@ -1375,14 +1375,72 @@ describe("worker app accounts", () => {
     expect(leased?.lastCheckedAt).toBe("2026-06-18T08:05:00.000Z");
   });
 
+  it("backs off failing Google News sources and skips quarantined source refreshes", async () => {
+    const repo = new InMemoryRepository();
+    const queue = new FakeDistilledQueue();
+    const app = createApp({ repository: repo, bucket: new FakeBucket(), queue: new FakeQueue() });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+
+    const source = await repo.upsertConfiguredSource({
+      briefingId: briefing!.id,
+      title: "Google News: Lebanon security",
+      provider: "rss",
+      kind: "google_news",
+      sourceUrl: "https://news.google.com/rss/search?q=Lebanon+security&hl=en-US&gl=US&ceid=US%3Aen",
+      enabled: true
+    }, new Date("2026-06-18T08:00:00.000Z"));
+    await repo.updateSourceState({
+      sourceId: source.id,
+      lastCheckedAt: "2026-06-18T08:00:00.000Z",
+      lastError: "Could not fetch Google News RSS source: 503"
+    });
+
+    const quarantined = await repo.upsertConfiguredSource({
+      briefingId: briefing!.id,
+      title: "Google News: South Lebanon",
+      provider: "rss",
+      kind: "google_news",
+      sourceUrl: "https://news.google.com/rss/search?q=South+Lebanon&hl=en-US&gl=US&ceid=US%3Aen",
+      enabled: true
+    }, new Date("2026-06-18T08:00:00.000Z"));
+    await repo.updateSourceState({
+      sourceId: quarantined.id,
+      lastCheckedAt: "2026-06-17T08:00:00.000Z",
+      lastError: "Paused after repeated source failures: Could not fetch Google News RSS source: 503"
+    });
+
+    const backedOff = await enqueueDueSourceRefreshJobs({
+      briefing: briefing!,
+      repo,
+      queue,
+      now: new Date("2026-06-18T10:00:00.000Z")
+    });
+    const dueAfterBackoff = await enqueueDueSourceRefreshJobs({
+      briefing: briefing!,
+      repo,
+      queue,
+      now: new Date("2026-06-18T14:01:00.000Z")
+    });
+
+    expect(backedOff).toBe(0);
+    expect(dueAfterBackoff).toBe(1);
+    expect(queue.messages).toEqual([
+      { type: "refresh_source", briefingId: briefing!.id, sourceId: source.id, force: undefined }
+    ]);
+  });
+
   it("fetches, imports, and processes a Google News RSS source without Apify", async () => {
     const repo = new InMemoryRepository();
     const bucket = new FakeBucket();
     const queue = new FakeQueue();
-    const fetcher = vi.fn(async (request: RequestInfo | URL) => {
+    const fetcher = vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
       const url = String(request);
       if (url.startsWith("https://news.google.com/rss/search")) {
         expect(new URL(url).searchParams.get("q")).toBe("central bank lebanon");
+        expect(new Headers(init?.headers).get("accept")).toContain("application/rss+xml");
+        expect(new Headers(init?.headers).get("user-agent")).toContain("DistilledNewsBot");
         return new Response(
           `<?xml version="1.0"?>
           <rss><channel>
@@ -1510,6 +1568,164 @@ describe("worker app accounts", () => {
       kind: "google_news",
       sourceUrl: "https://news.google.com/rss/search?q=lebanon+electricity&hl=en-US&gl=US&ceid=US%3Aen"
     });
+  });
+
+  it("falls back to a capped Apify run when Google News RSS is temporarily unavailable", async () => {
+    const repo = new InMemoryRepository();
+    const bucket = new FakeBucket();
+    const queue = new FakeQueue();
+    const fetcher = vi.fn(async (request: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(request);
+      if (url.startsWith("https://news.google.com/rss/search")) {
+        return new Response("unavailable", { status: 503 });
+      }
+      if (url.includes("/actors/groupoject~google-news-scraper/runs")) {
+        expect(new URL(url).searchParams.get("maxItems")).toBeNull();
+        expect(JSON.parse(String(init?.body))).toEqual({
+          queries: ["lebanon economy"],
+          geo: "US",
+          language: "en",
+          maxItemsPerQuery: 20
+        });
+        return new Response(JSON.stringify({
+          data: {
+            id: "run_google_news",
+            status: "RUNNING",
+            defaultDatasetId: "dataset_google_news",
+            startedAt: "2026-06-16T08:15:00.000Z"
+          }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const user = await createVerifiedUser(createApp({ repository: repo }), repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    const source = await repo.upsertConfiguredSource({
+      briefingId: briefing!.id,
+      title: "Google News: lebanon economy",
+      provider: "rss",
+      kind: "google_news",
+      input: "news: lebanon economy",
+      sourceUrl: "https://news.google.com/rss/search?q=lebanon+economy&hl=en-US&gl=US&ceid=US%3Aen",
+      enabled: true
+    });
+
+    const result = await refreshSourceById({
+      briefing: briefing!,
+      sourceId: source.id,
+      repo,
+      bucket,
+      queue,
+      env: { ...env(), APIFY_API_TOKEN: "token" } as Env,
+      fetcher: fetcher as unknown as typeof fetch,
+      now: new Date("2026-06-16T08:15:00.000Z")
+    });
+    const runs = await repo.listSourceRuns({ sourceId: source.id });
+    const refreshedSource = await repo.getSource(source.id);
+    const dispatchQueue = new FakeDistilledQueue();
+    const enqueued = await enqueueDueSourceRefreshJobs({
+      briefing: briefing!,
+      repo,
+      queue: dispatchQueue,
+      now: new Date("2026-06-16T08:31:00.000Z")
+    });
+
+    expect(result).toMatchObject({
+      runStarted: true,
+      provider: "apify",
+      kind: "google_news"
+    });
+    expect(runs[0]).toMatchObject({
+      actorId: "groupoject/google-news-scraper",
+      actorRunId: "run_google_news",
+      state: "running",
+      estimatedCostUsd: 0.02
+    });
+    expect(refreshedSource).toMatchObject({
+      lastCheckedAt: "2026-06-16T08:15:00.000Z"
+    });
+    expect(refreshedSource?.lastError).toBeUndefined();
+    expect(enqueued).toBe(0);
+    expect(dispatchQueue.messages).toHaveLength(0);
+
+    const duplicateResult = await refreshSourceById({
+      briefing: briefing!,
+      sourceId: source.id,
+      repo,
+      bucket,
+      queue,
+      env: { ...env(), APIFY_API_TOKEN: "token" } as Env,
+      fetcher: fetcher as unknown as typeof fetch,
+      now: new Date("2026-06-16T08:32:00.000Z")
+    });
+    expect(duplicateResult).toMatchObject({
+      runStarted: true,
+      provider: "apify",
+      kind: "google_news"
+    });
+    expect((await repo.getSource(source.id))?.lastError).toBeUndefined();
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not start the Google News Apify fallback after the daily source cap is reached", async () => {
+    const repo = new InMemoryRepository();
+    const bucket = new FakeBucket();
+    const queue = new FakeQueue();
+    const fetcher = vi.fn(async (request: RequestInfo | URL) => {
+      const url = String(request);
+      if (url.startsWith("https://news.google.com/rss/search")) {
+        return new Response("unavailable", { status: 503 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const user = await createVerifiedUser(createApp({ repository: repo }), repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    const source = await repo.upsertConfiguredSource({
+      briefingId: briefing!.id,
+      title: "Google News: lebanon economy",
+      provider: "rss",
+      kind: "google_news",
+      input: "news: lebanon economy",
+      sourceUrl: "https://news.google.com/rss/search?q=lebanon+economy&hl=en-US&gl=US&ceid=US%3Aen",
+      enabled: true
+    });
+    for (let hour = 0; hour < 4; hour += 1) {
+      const startedAt = `2026-06-16T0${hour}:00:00.000Z`;
+      await repo.createSourceRun({
+        sourceId: source.id,
+        briefingId: briefing!.id,
+        provider: "apify",
+        actorId: "groupoject/google-news-scraper",
+        actorRunId: `run_google_news_${hour}`,
+        state: "succeeded",
+        estimatedCostUsd: 0.02,
+        startedAt
+      }, new Date(startedAt));
+    }
+
+    const result = await refreshSourceById({
+      briefing: briefing!,
+      sourceId: source.id,
+      repo,
+      bucket,
+      queue,
+      env: { ...env(), APIFY_API_TOKEN: "token" } as Env,
+      fetcher: fetcher as unknown as typeof fetch,
+      now: new Date("2026-06-16T08:00:00.000Z")
+    });
+    const refreshedSource = await repo.getSource(source.id);
+    const runs = await repo.listSourceRuns({ sourceId: source.id });
+
+    expect(result).toMatchObject({
+      provider: "apify",
+      kind: "google_news",
+      runStarted: false
+    });
+    expect(refreshedSource?.lastError).toContain("Apify fallback daily source cap reached");
+    expect(runs).toHaveLength(4);
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("marks Apify demo placeholder datasets as source errors", async () => {
@@ -1953,6 +2169,49 @@ describe("worker app accounts", () => {
       env()
     );
     expect(disabled.status).toBe(200);
+
+    const userBriefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(userBriefing).not.toBeNull();
+
+    const briefingsResponse = await app.request("/api/admin/briefings", { headers: { cookie: admin.cookie } }, env());
+    expect(briefingsResponse.status).toBe(200);
+    const adminBriefings = (await briefingsResponse.json()) as { briefings: Array<{ id: string; ownerAccountId: string }> };
+    expect(adminBriefings.briefings.some((briefing) => briefing.ownerAccountId === user.account.id)).toBe(true);
+
+    const pauseFeed = await app.request(
+      `/api/admin/briefings/${userBriefing!.id}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json", cookie: admin.cookie },
+        body: JSON.stringify({ paused: true })
+      },
+      env()
+    );
+    expect(pauseFeed.status).toBe(200);
+    expect((await repo.getBriefingById(userBriefing!.id))?.paused).toBe(true);
+
+    const deleteFeed = await app.request(
+      `/api/admin/briefings/${userBriefing!.id}`,
+      { method: "DELETE", headers: { cookie: admin.cookie } },
+      env()
+    );
+    expect(deleteFeed.status).toBe(200);
+    expect(await repo.getBriefingById(userBriefing!.id)).toBeNull();
+
+    const deleteUser = await app.request(
+      `/api/admin/accounts/${user.account.id}`,
+      { method: "DELETE", headers: { cookie: admin.cookie } },
+      env()
+    );
+    expect(deleteUser.status).toBe(200);
+    expect(await repo.getAccountById(user.account.id)).toBeNull();
+
+    const rejectSelfDelete = await app.request(
+      `/api/admin/accounts/${admin.account.id}`,
+      { method: "DELETE", headers: { cookie: admin.cookie } },
+      env()
+    );
+    expect(rejectSelfDelete.status).toBe(400);
 
     const rejectLastAdminDisable = await app.request(
       `/api/admin/accounts/${admin.account.id}`,

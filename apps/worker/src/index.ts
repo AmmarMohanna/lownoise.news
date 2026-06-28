@@ -89,8 +89,13 @@ async function recordQueueFailure(
     return;
   }
   if (isSourceRefreshJobMessage(body)) {
-    await repo.updateSourceState({ sourceId: body.sourceId, lastError: message });
+    await repo.updateSourceState({ sourceId: body.sourceId, lastError: sourceFailureMessage(error, quarantined) });
+    if (quarantined) await repo.setSourceEnabled(body.sourceId, false);
   }
+}
+
+function sourceFailureMessage(error: string, quarantined: boolean): string {
+  return quarantined ? `Paused after repeated source failures: ${error}` : error;
 }
 
 function isProcessingJobMessage(body: unknown): body is ProcessingJobMessage {

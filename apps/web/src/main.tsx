@@ -1,18 +1,23 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Activity,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   Circle,
   CircleCheck,
   Compass,
   Copy,
   ExternalLink,
+  Gauge,
   Globe,
   Github,
   HelpCircle,
   Languages,
+  LayoutDashboard,
+  ListChecks,
   LogIn,
   LogOut,
   Moon,
@@ -20,10 +25,13 @@ import {
   Pause,
   Play,
   Plus,
+  RadioTower,
   RefreshCw,
   Save,
   Search,
   Settings,
+  ShieldCheck,
+  Sparkles,
   Star,
   Sun,
   Trash2,
@@ -35,6 +43,8 @@ import { personalNewsBriefing } from "@distilled/core";
 import {
   addSource,
   deleteBriefing,
+  deleteAdminAccount,
+  deleteAdminBriefing,
   deleteSource,
   forgotPassword,
   getBriefings,
@@ -44,6 +54,7 @@ import {
   getHealth,
   getSession,
   getSources,
+  listAdminBriefings,
   listAccounts,
   login,
   logout,
@@ -59,6 +70,7 @@ import {
   setupAdmin,
   updateAccount,
   updateAdminAccount,
+  updateAdminBriefing,
   verifyEmail,
   type SourceIngestResult,
   type SourceRefreshResult
@@ -424,6 +436,16 @@ function AdminPage() {
     <>
       <Shell title="create" onAccount={() => setAccountDialogOpen(true)} feed={briefing}>
         <div className="admin-stack">
+          <AdminCommandPanel
+            briefing={briefing}
+            sources={sources}
+            health={health}
+            status={status}
+            sourceStatus={sourceStatus}
+            onOpenSettings={() => setFeedSettingsOpen(true)}
+            onCopy={() => copyFeedUrl(briefing)}
+          />
+
           <section className="section feed-section">
             <div className="section-title">
               <Globe size={16} aria-hidden />
@@ -623,7 +645,7 @@ function AdminPage() {
                     </label>
                     <span className="source-link" dir="ltr">{sourceProviderLabel(source)}</span>
                     {source.url || source.sourceUrl ? <a className="source-link" href={source.url ?? source.sourceUrl} target="_blank" rel="noreferrer" dir="ltr">{source.username ?? "open"}</a> : null}
-                    {source.lastError ? <span className="source-error" title={source.lastError}>{source.lastError}</span> : null}
+                    <SourceStatusNote source={source} />
                   </div>
                   <button
                     type="button"
@@ -647,6 +669,7 @@ function AdminPage() {
           {account.role === "admin" ? (
             <AdminAccountsSection
               accounts={accounts}
+              currentAccountId={account.id}
               onAccountsChanged={(nextAccounts) => setAccounts(nextAccounts)}
             />
           ) : null}
@@ -717,6 +740,74 @@ function AdminPage() {
       setHealth(nextHealth);
     }
   }
+}
+
+function AdminCommandPanel(props: {
+  briefing: BriefingConfig;
+  sources: SourceRecord[];
+  health: HealthStatus | null;
+  status: string;
+  sourceStatus: string;
+  onOpenSettings: () => void;
+  onCopy: () => Promise<void>;
+}) {
+  const enabledSources = props.sources.filter((source) => source.enabled).length;
+  const queuedJobs = props.health?.processing.queued ?? 0;
+  const failedJobs = props.health?.processing.failed ?? 0;
+  const latestPublishedAt = props.health?.latestPublishedAt;
+  const nextBriefingAt = props.health?.nextBriefingAt ?? props.briefing.nextBriefingAt;
+  const activity = props.sourceStatus || props.status || getHealthSummaryParts(props.briefing, props.health).queueState;
+  const sourceCopy = `${enabledSources}/${props.sources.length} enabled`;
+
+  return (
+    <section className="command-panel" aria-label="feed command center">
+      <div className="command-panel-main">
+        <span className="eyebrow">public console</span>
+        <div className="command-title-row">
+          <span className={`status-dot ${props.briefing.paused ? "paused" : "live"}`} aria-hidden />
+          <h2><bdi>{props.briefing.title}</bdi></h2>
+        </div>
+        <code className="command-url">/{props.briefing.ownerUsername}/{props.briefing.slug}/</code>
+        <div className="command-actions">
+          <a className="button-link primary-button" href={`/${props.briefing.ownerUsername}/${props.briefing.slug}/`} title="open feed">
+            <ExternalLink size={15} aria-hidden /> open feed
+          </a>
+          <button type="button" title="feed settings" onClick={props.onOpenSettings}>
+            <Settings size={15} aria-hidden /> settings
+          </button>
+          <button type="button" title="copy feed url" onClick={() => void props.onCopy()}>
+            <Copy size={15} aria-hidden /> copy url
+          </button>
+        </div>
+      </div>
+      <div className="command-metrics" aria-label="feed signals">
+        <div className="metric-tile">
+          <RadioTower size={18} aria-hidden />
+          <span>state</span>
+          <strong>{props.briefing.paused ? "paused" : "live"}</strong>
+        </div>
+        <div className="metric-tile">
+          <ListChecks size={18} aria-hidden />
+          <span>sources</span>
+          <strong>{sourceCopy}</strong>
+        </div>
+        <div className="metric-tile">
+          <Activity size={18} aria-hidden />
+          <span>queue</span>
+          <strong>{queuedJobs} queued / {failedJobs} failed</strong>
+        </div>
+        <div className="metric-tile">
+          <Clock3 size={18} aria-hidden />
+          <span>next</span>
+          <strong>{props.briefing.paused ? pausedScheduleLabel(props.briefing.language) : nextBriefingAt ? <Timestamp value={nextBriefingAt} language={props.briefing.language} /> : "after save"}</strong>
+        </div>
+      </div>
+      <div className="command-footer">
+        <span><ShieldCheck size={15} aria-hidden /> {activity}</span>
+        <span>{latestPublishedAt ? <>latest <Timestamp value={latestPublishedAt} language={props.briefing.language} /></> : "no published brief yet"}</span>
+      </div>
+    </section>
+  );
 }
 
 function AuthPanel(props: { setupRequired: boolean; turnstileSiteKey?: string; onAuthenticated: () => Promise<void> }) {
@@ -1489,10 +1580,45 @@ function AccountDialog(props: {
 
 function AdminAccountsSection(props: {
   accounts: AccountWithStats[];
+  currentAccountId: string;
   onAccountsChanged: (accounts: AccountWithStats[]) => void;
 }) {
   const [managedAccountId, setManagedAccountId] = useState<string | null>(null);
+  const [adminBriefings, setAdminBriefings] = useState<BriefingConfig[]>([]);
+  const [loadingFeeds, setLoadingFeeds] = useState(false);
+  const [error, setError] = useState("");
   const managedAccount = props.accounts.find((account) => account.id === managedAccountId) ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAdminBriefings() {
+      setLoadingFeeds(true);
+      setError("");
+      try {
+        const nextBriefings = await listAdminBriefings();
+        if (!cancelled) setAdminBriefings(nextBriefings);
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (!cancelled) setLoadingFeeds(false);
+      }
+    }
+    void loadAdminBriefings();
+    return () => {
+      cancelled = true;
+    };
+  }, [props.accounts]);
+
+  useEffect(() => {
+    if (managedAccountId && !props.accounts.some((account) => account.id === managedAccountId)) {
+      setManagedAccountId(null);
+    }
+  }, [managedAccountId, props.accounts]);
+
+  async function refreshAdminBriefings() {
+    const nextBriefings = await listAdminBriefings();
+    setAdminBriefings(nextBriefings);
+  }
 
   return (
     <>
@@ -1501,33 +1627,43 @@ function AdminAccountsSection(props: {
           <User size={16} aria-hidden />
           <h2>accounts</h2>
           <span className="pill">{props.accounts.length}</span>
+          <span className="pill">{adminBriefings.length} feeds</span>
         </summary>
+        {loadingFeeds ? <p className="muted">loading feeds</p> : null}
+        {error ? <p className="error">{error}</p> : null}
         <div className="source-list">
-          {props.accounts.map((account) => (
-            <div key={account.id} className="source-row">
-              <div className="source-copy">
-                <strong>{account.username}</strong>
-                <span className="muted">{account.email} / {account.role} / feeds {account.briefingCount}</span>
-                <span className="muted">{account.disabledAt ? "disabled" : account.emailVerifiedAt ? "verified" : "unverified"}</span>
+          {props.accounts.map((account) => {
+            const feedCount = adminBriefings.filter((briefing) => briefing.ownerAccountId === account.id).length;
+            return (
+              <div key={account.id} className="source-row">
+                <div className="source-copy">
+                  <strong>{account.username}</strong>
+                  <span className="muted">{account.email} / {account.role} / feeds {feedCount || account.briefingCount}</span>
+                  <span className="muted">{account.disabledAt ? "disabled" : account.emailVerifiedAt ? "verified" : "unverified"}</span>
+                </div>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`manage ${account.username}`}
+                  title="manage account"
+                  onClick={() => setManagedAccountId(account.id)}
+                >
+                  <Settings size={15} aria-hidden />
+                </button>
               </div>
-              <button
-                type="button"
-                className="icon-button"
-                aria-label={`manage ${account.username}`}
-                title="manage account"
-                onClick={() => setManagedAccountId(account.id)}
-              >
-                <Settings size={15} aria-hidden />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </details>
       {managedAccount ? (
         <AdminAccountDialog
           account={managedAccount}
+          currentAccountId={props.currentAccountId}
+          briefings={adminBriefings.filter((briefing) => briefing.ownerAccountId === managedAccount.id)}
           onClose={() => setManagedAccountId(null)}
           onAccountsChanged={props.onAccountsChanged}
+          onBriefingsChanged={setAdminBriefings}
+          onRefreshBriefings={refreshAdminBriefings}
         />
       ) : null}
     </>
@@ -1536,14 +1672,19 @@ function AdminAccountsSection(props: {
 
 function AdminAccountDialog(props: {
   account: AccountWithStats;
+  currentAccountId: string;
+  briefings: BriefingConfig[];
   onClose: () => void;
   onAccountsChanged: (accounts: AccountWithStats[]) => void;
+  onBriefingsChanged: (briefings: BriefingConfig[]) => void;
+  onRefreshBriefings: () => Promise<void>;
 }) {
   const [username, setUsername] = useState(props.account.username);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"username" | "role" | "disabled" | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const usernameFieldRef = useRef<HTMLInputElement | null>(null);
+  const isSignedInAdmin = props.account.id === props.currentAccountId;
 
   useEffect(() => {
     setUsername(props.account.username);
@@ -1558,7 +1699,62 @@ function AdminAccountDialog(props: {
     setMessage("");
     const result = await updateAdminAccount(props.account.id, input);
     props.onAccountsChanged(result.accounts);
+    await props.onRefreshBriefings();
     setMessage(nextMessage);
+  }
+
+  async function toggleAdminBriefing(feed: BriefingConfig) {
+    setBusy(`feed:${feed.id}:pause`);
+    setError("");
+    setMessage("");
+    try {
+      const result = await updateAdminBriefing(feed.id, { paused: !feed.paused });
+      props.onAccountsChanged(result.accounts);
+      props.onBriefingsChanged(result.briefings);
+      setMessage(feed.paused ? "feed resumed" : "feed paused");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeAdminBriefing(feed: BriefingConfig) {
+    if (!window.confirm(`Delete "${feed.title}" and all of its sources and published items?`)) return;
+    setBusy(`feed:${feed.id}:delete`);
+    setError("");
+    setMessage("");
+    try {
+      const result = await deleteAdminBriefing(feed.id);
+      props.onAccountsChanged(result.accounts);
+      props.onBriefingsChanged(result.briefings);
+      setMessage("feed deleted");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeAccount() {
+    if (isSignedInAdmin) {
+      setError("cannot delete the signed-in admin");
+      return;
+    }
+    if (!window.confirm(`Delete "${props.account.username}" and all of this user's feeds, sources, and published items?`)) return;
+    setBusy("delete-account");
+    setError("");
+    setMessage("");
+    try {
+      const result = await deleteAdminAccount(props.account.id);
+      props.onAccountsChanged(result.accounts);
+      props.onBriefingsChanged(result.briefings);
+      props.onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
@@ -1566,7 +1762,8 @@ function AdminAccountDialog(props: {
       <div className="account-meta">
         <span>{props.account.email}</span>
         <span>{props.account.disabledAt ? "disabled" : props.account.emailVerifiedAt ? "verified" : "unverified"}</span>
-        <span>{props.account.briefingCount} feed{props.account.briefingCount === 1 ? "" : "s"}</span>
+        <span>{props.briefings.length} feed{props.briefings.length === 1 ? "" : "s"}</span>
+        {isSignedInAdmin ? <span>current admin</span> : null}
       </div>
 
       <form
@@ -1641,6 +1838,66 @@ function AdminAccountDialog(props: {
           }}
         >
           {props.account.disabledAt ? "enable account" : "disable account"}
+        </button>
+      </div>
+
+      <div className="account-form admin-feed-control">
+        <div className="field-group">
+          <span>feeds</span>
+          {props.briefings.length > 0 ? (
+            <div className="admin-feed-list">
+              {props.briefings.map((feed) => (
+                <div key={feed.id} className="admin-feed-row">
+                  <div className="admin-feed-copy">
+                    <strong><bdi>{feed.title}</bdi></strong>
+                    <span className="muted">/{feed.ownerUsername}/{feed.slug}/</span>
+                    <span className="muted">{feed.paused ? "paused" : "live"} / {feed.briefingCadence} / {feed.stars} stars</span>
+                  </div>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      title={feed.paused ? "resume feed" : "pause feed"}
+                      disabled={busy === `feed:${feed.id}:pause`}
+                      onClick={() => void toggleAdminBriefing(feed)}
+                    >
+                      {feed.paused ? <Play size={15} aria-hidden /> : <Pause size={15} aria-hidden />}
+                      {feed.paused ? "resume" : "pause"}
+                    </button>
+                    <a className="button-link icon-button" href={`/${feed.ownerUsername}/${feed.slug}/`} aria-label={`open ${feed.title}`} title="open feed">
+                      <ExternalLink size={15} aria-hidden />
+                    </a>
+                    <button
+                      type="button"
+                      className="danger-button"
+                      title="delete feed"
+                      disabled={busy === `feed:${feed.id}:delete`}
+                      onClick={() => void removeAdminBriefing(feed)}
+                    >
+                      <Trash2 size={15} aria-hidden /> delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">no feeds</p>
+          )}
+        </div>
+      </div>
+
+      <div className="account-form account-danger-zone">
+        <div className="field-group">
+          <span>danger zone</span>
+          <p className="muted">Deleting an account removes its feeds, sources, tokens, and published history.</p>
+        </div>
+        <button
+          type="button"
+          className="danger-button"
+          title={isSignedInAdmin ? "cannot delete the signed-in admin" : "delete account"}
+          disabled={isSignedInAdmin || busy === "delete-account"}
+          onClick={() => void removeAccount()}
+        >
+          <Trash2 size={15} aria-hidden /> delete account
         </button>
       </div>
 
@@ -1804,6 +2061,15 @@ function FeedPage(props: { username: string; slug: string }) {
       feed={payload?.briefing}
       pageLanguage={language}
     >
+      {payload ? (
+        <FeedSignalPanel
+          briefing={payload.briefing}
+          editionCount={editions.length}
+          unreadCount={unreadEditions.length}
+          language={language}
+          nowMs={clock}
+        />
+      ) : null}
       <div className="feed-tools" dir={pageDir}>
         <div className="feed-actions">
           <button type="button" title={refreshControlLabel(language)} onClick={() => refresh()}><RefreshCw size={15} aria-hidden /> {refreshControlLabel(language)}</button>
@@ -1935,6 +2201,51 @@ function FeedPage(props: { username: string; slug: string }) {
         </details>
       ) : null}
     </Shell>
+  );
+}
+
+function FeedSignalPanel(props: {
+  briefing: PublicBriefing;
+  editionCount: number;
+  unreadCount: number;
+  language: "en" | "ar" | "fr";
+  nowMs: number;
+}) {
+  const nextValue = props.briefing.paused
+    ? pausedScheduleLabel(props.language)
+    : props.briefing.nextBriefingAt
+      ? formatCountdown(props.briefing.nextBriefingAt, props.nowMs, props.language)
+      : summaryPublishedLabel(props.language);
+  return (
+    <section className="feed-signal-panel" aria-label="feed signal">
+      <div className="feed-signal-primary">
+        <span className="eyebrow">{cadenceMetaLabel(props.briefing.briefingCadence, props.language)}</span>
+        <strong><bdi>{props.briefing.title}</bdi></strong>
+        <span className="muted">@{props.briefing.ownerUsername}</span>
+      </div>
+      <div className="feed-signal-grid">
+        <div className="signal-stat">
+          <Sparkles size={17} aria-hidden />
+          <span>{props.unreadCount}</span>
+          <small>{signalMetricLabel("unread", props.language)}</small>
+        </div>
+        <div className="signal-stat">
+          <LayoutDashboard size={17} aria-hidden />
+          <span>{props.editionCount}</span>
+          <small>{signalMetricLabel("published", props.language)}</small>
+        </div>
+        <div className="signal-stat">
+          <Star size={17} aria-hidden />
+          <span>{props.briefing.stars}</span>
+          <small>{signalMetricLabel("stars", props.language)}</small>
+        </div>
+        <div className="signal-stat wide">
+          <Gauge size={17} aria-hidden />
+          <span><bdi>{nextValue}</bdi></span>
+          <small>{signalMetricLabel("next", props.language)}</small>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2225,6 +2536,8 @@ function Shell(props: {
   const [theme, setTheme] = useState(() => (localStorage.getItem("dn_theme") === "dark" ? "dark" : "light"));
   const titleText = props.titleText ?? (typeof props.title === "string" ? props.title : "briefing");
   const shellLanguage = props.pageLanguage ?? "en";
+  const shellMode = props.feed ? "feed-shell" : props.onAccount ? "admin-shell" : "auth-shell";
+  const showCreateNav = shellMode !== "auth-shell";
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("dn_theme", theme);
@@ -2243,7 +2556,7 @@ function Shell(props: {
   }, [props.feed, props.pageLanguage, titleText]);
 
   return (
-    <main className="shell">
+    <main className={`shell ${shellMode}`}>
       <header>
         <div className="header-primary">
           <div className="brand-lockup">
@@ -2257,7 +2570,7 @@ function Shell(props: {
         </div>
         <div className="header-actions">
           <nav>
-            <a href="/" title={createNavLabel(shellLanguage)}>{createNavLabel(shellLanguage)}</a>
+            {showCreateNav ? <a href="/" title={createNavLabel(shellLanguage)}>{createNavLabel(shellLanguage)}</a> : null}
             {props.feed ? <span className="nav-separator" aria-hidden="true">|</span> : null}
             {props.feed ? <a href={`/${props.feed.ownerUsername}/${props.feed.slug}/`}>{feedNavLabel(shellLanguage)}</a> : null}
           </nav>
@@ -2302,6 +2615,25 @@ function feedNavLabel(language: "en" | "ar" | "fr"): string {
   if (language === "ar") return "الموجز";
   if (language === "fr") return "fil";
   return "feed";
+}
+
+function signalMetricLabel(metric: "unread" | "published" | "stars" | "next", language: "en" | "ar" | "fr"): string {
+  if (language === "ar") {
+    if (metric === "unread") return "غير مقروء";
+    if (metric === "published") return "منشور";
+    if (metric === "stars") return "نجوم";
+    return "التالي";
+  }
+  if (language === "fr") {
+    if (metric === "unread") return "non lu";
+    if (metric === "published") return "publié";
+    if (metric === "stars") return "étoiles";
+    return "prochain";
+  }
+  if (metric === "unread") return "unread";
+  if (metric === "published") return "published";
+  if (metric === "stars") return "stars";
+  return "next";
 }
 
 function updateBriefingList(current: BriefingConfig[], next: BriefingConfig): BriefingConfig[] {
@@ -2395,6 +2727,42 @@ function sourceProviderLabel(source: SourceRecord): string {
   if (source.kind === "rss_feed") return "rss";
   if (source.kind === "linkedin_company" || source.kind === "linkedin_profile") return "linkedin";
   return source.provider;
+}
+
+function SourceStatusNote(props: { source: SourceRecord }) {
+  if (!props.source.lastError) return null;
+  const note = sourceStatusNote(props.source);
+  return <span className={note.className} title={props.source.lastError}>{note.text}</span>;
+}
+
+function sourceStatusNote(source: SourceRecord): { text: string; className: string } {
+  if (source.kind === "google_news" && /Google News RSS source: (?:429|5\d\d)/i.test(source.lastError ?? "")) {
+    if (/Apify fallback daily .* cap reached/i.test(source.lastError ?? "")) {
+      return {
+        text: "Google News RSS is unavailable and the Apify fallback hit today's cap.",
+        className: "source-warning"
+      };
+    }
+    if (/Apify fallback failed/i.test(source.lastError ?? "")) {
+      return {
+        text: "Google News RSS is unavailable and the Apify fallback could not start.",
+        className: "source-warning"
+      };
+    }
+    return {
+      text: source.enabled
+        ? "Google News RSS is temporarily unavailable from the Worker; retrying through the guarded schedule."
+        : "Paused after repeated Google News RSS failures. Re-enable to retry.",
+      className: "source-warning"
+    };
+  }
+  if (/^(Quarantined after repeated queue failures|Paused after repeated source failures):/i.test(source.lastError ?? "")) {
+    return {
+      text: source.enabled ? "Repeated source failures; monitoring before the next retry." : "Paused after repeated source failures. Re-enable to retry.",
+      className: "source-warning"
+    };
+  }
+  return { text: source.lastError ?? "", className: "source-error" };
 }
 
 function isHealthActivity(activity: string): boolean {

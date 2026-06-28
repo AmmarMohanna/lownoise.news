@@ -22,10 +22,17 @@ const RSS_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const TELEGRAM_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const GOOGLE_NEWS_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-const X_MAX_ITEMS = 20;
+const GOOGLE_NEWS_ERROR_BACKOFF_MS = 6 * HOUR_MS;
 // Apify rejects pay-per-result run-level caps below its minimum run charge.
 // Actor input still keeps the requested product cap at 20 X tweets.
 const APIFY_MINIMUM_RUN_CHARGE_USD = 0.02;
+const GOOGLE_NEWS_APIFY_FALLBACK_ACTOR_ID = "groupoject/google-news-scraper";
+const GOOGLE_NEWS_APIFY_FALLBACK_INTERVAL_MS = 3 * HOUR_MS;
+const GOOGLE_NEWS_APIFY_FALLBACK_MAX_ITEMS = 20;
+const GOOGLE_NEWS_APIFY_FALLBACK_ESTIMATED_COST_USD = APIFY_MINIMUM_RUN_CHARGE_USD;
+const GOOGLE_NEWS_APIFY_FALLBACK_SOURCE_DAILY_COST_LIMIT_USD = 0.08;
+const GOOGLE_NEWS_APIFY_FALLBACK_BRIEFING_DAILY_COST_LIMIT_USD = 0.40;
+const X_MAX_ITEMS = 20;
 const X_PRICE_PER_1000_TWEETS_USD = 0.18;
 
 export type SourceIngestResult = PublicTelegramIngestResult & {
@@ -93,7 +100,7 @@ export async function enqueueDueSourceRefreshJobs(input: SourceRefreshDispatchIn
 
   for (const source of sources) {
     if (!input.force && !isSourceRefreshDue(input.briefing, source, now)) continue;
-    if (source.provider === "apify" && source.kind !== "google_news" && await hasActiveApifyRun(input.repo, source.id)) continue;
+    if ((source.provider === "apify" || source.kind === "google_news") && await hasActiveApifyRun(input.repo, source.id)) continue;
 
     await input.repo.updateSourceState({
       sourceId: source.id,
@@ -206,9 +213,16 @@ async function ingestRssSource(input: SourceRefreshInput & { source: SourceRecor
   if (!url) throw new Error(isGoogleNews ? "Google News RSS source URL is missing." : "RSS source URL is missing.");
 
   const response = await fetcher(url, {
-    headers: { "user-agent": isGoogleNews ? "Distilled.news Google News RSS source reader" : "Distilled.news RSS source reader" }
+    headers: rssRequestHeaders(isGoogleNews)
   });
-  if (!response.ok) throw new Error(`Could not fetch ${isGoogleNews ? "Google News RSS" : "RSS"} source: ${response.status}`);
+  if (!response.ok) {
+    const message = `Could not fetch ${isGoogleNews ? "Google News RSS" : "RSS"} source: ${response.status}`;
+    if (isGoogleNews && isRetryableGoogleNewsStatus(response.status)) {
+      const fallback = await startGoogleNewsApifyFallback({ ...input, source: input.source, now, rssError: message });
+      if (fallback) return fallback;
+    }
+    throw new Error(message);
+  }
 
   const xml = await response.text();
   const rawPayloadKey = `${isGoogleNews ? "google-news" : "rss"}/${input.briefing.id}/${input.source.id}/${now.getTime()}.xml`;
@@ -257,23 +271,81 @@ async function startCappedApifySourceRun(input: SourceRefreshInput & {
   });
 }
 
+async function startGoogleNewsApifyFallback(input: SourceRefreshInput & {
+  source: SourceRecord;
+  now: Date;
+  rssError: string;
+}): Promise<SourceIngestResult | undefined> {
+  if (!input.env?.APIFY_API_TOKEN) return undefined;
+  if (await hasActiveApifyRun(input.repo, input.source.id)) {
+    return updateGoogleNewsFallbackState(input, undefined, true);
+  }
+
+  const actorInput = googleNewsApifyActorInput(input.source);
+  if (!actorInput) return undefined;
+
+  const skipReason = await googleNewsApifyFallbackSkipReason(input);
+  if (skipReason) {
+    return updateGoogleNewsFallbackState(input, `${input.rssError}; ${skipReason}`, skipReason === "Apify fallback recently started");
+  }
+
+  try {
+    return await startApifySourceRun({
+      ...input,
+      actorId: input.source.actorId ?? input.env.APIFY_GOOGLE_NEWS_ACTOR_ID ?? GOOGLE_NEWS_APIFY_FALLBACK_ACTOR_ID,
+      actorInput,
+      estimatedCostUsd: GOOGLE_NEWS_APIFY_FALLBACK_ESTIMATED_COST_USD
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown Apify fallback error";
+    throw new Error(`${input.rssError}; Apify fallback failed: ${message}`);
+  }
+}
+
+async function updateGoogleNewsFallbackState(input: SourceRefreshInput & {
+  source: SourceRecord;
+  now: Date;
+}, lastError: string | undefined, runStarted: boolean): Promise<SourceIngestResult> {
+  await input.repo.updateSourceState({
+    sourceId: input.source.id,
+    lastCheckedAt: input.now.toISOString(),
+    lastError
+  }, input.now);
+  return {
+    sourceId: input.source.id,
+    title: input.source.title,
+    url: googleNewsSourceUrl(input.source) ?? input.source.sourceUrl ?? input.source.url ?? input.source.input ?? input.source.id,
+    fetched: 0,
+    imported: 0,
+    queued: 0,
+    skipped: 0,
+    provider: "apify",
+    kind: "google_news",
+    runStarted
+  };
+}
+
 async function startApifySourceRun(input: SourceRefreshInput & {
   source: SourceRecord;
+  actorId?: string;
+  actorInput?: unknown;
   estimatedCostUsd?: number;
   maxItems?: number;
 }): Promise<SourceIngestResult> {
   const now = input.now ?? new Date();
   if (!input.env?.APIFY_API_TOKEN) throw new Error("APIFY_API_TOKEN is not configured.");
-  if (!input.source.actorId) throw new Error("Apify actor is not configured for this source.");
+  const actorId = input.actorId ?? input.source.actorId;
+  const actorInput = input.actorInput ?? input.source.actorInput ?? {};
+  if (!actorId) throw new Error("Apify actor is not configured for this source.");
 
-  const actorRun = await runApifyActor(input.source.actorId, input.source.actorInput ?? {}, input.env.APIFY_API_TOKEN, input.fetcher, {
+  const actorRun = await runApifyActor(actorId, actorInput, input.env.APIFY_API_TOKEN, input.fetcher, {
     maxItems: input.maxItems
   });
   await input.repo.createSourceRun({
     sourceId: input.source.id,
     briefingId: input.briefing.id,
     provider: "apify",
-    actorId: input.source.actorId,
+    actorId,
     actorRunId: actorRun.id,
     datasetId: actorRun.defaultDatasetId,
     state: "running",
@@ -525,7 +597,11 @@ function isDue(lastCheckedAt: string | undefined, now: Date, intervalMs: number)
 }
 
 function isSourceRefreshDue(briefing: BriefingConfig, source: SourceRecord, now: Date): boolean {
-  if (source.kind === "google_news") return isDue(source.lastCheckedAt, now, GOOGLE_NEWS_REFRESH_INTERVAL_MS);
+  if (source.kind === "google_news") {
+    if (isQuarantinedSourceError(source.lastError)) return false;
+    const interval = isGoogleNewsFetchError(source.lastError) ? GOOGLE_NEWS_ERROR_BACKOFF_MS : GOOGLE_NEWS_REFRESH_INTERVAL_MS;
+    return isDue(source.lastCheckedAt, now, interval);
+  }
   if (source.provider === "telegram") return Boolean(source.url) && isDue(source.lastCheckedAt, now, TELEGRAM_REFRESH_INTERVAL_MS);
   if (source.provider === "rss") return Boolean(source.sourceUrl ?? source.url) && isDue(source.lastCheckedAt, now, RSS_REFRESH_INTERVAL_MS);
   if (source.provider === "apify") return isDue(source.lastCheckedAt, now, apifyRefreshIntervalMs(briefing));
@@ -539,6 +615,37 @@ async function hasActiveApifyRun(repo: Repository, sourceId: string): Promise<bo
     limit: 1
   });
   return active.length > 0;
+}
+
+async function googleNewsApifyFallbackSkipReason(input: SourceRefreshInput & {
+  source: SourceRecord;
+  now: Date;
+}): Promise<string | null> {
+  const recentRuns = await input.repo.listSourceRuns({ sourceId: input.source.id, limit: 10 });
+  const recentCutoff = input.now.getTime() - GOOGLE_NEWS_APIFY_FALLBACK_INTERVAL_MS;
+  if (recentRuns.some((run) => new Date(run.startedAt).getTime() >= recentCutoff)) {
+    return "Apify fallback recently started";
+  }
+
+  const since = startOfUtcDay(input.now).toISOString();
+  const sourceCost = await input.repo.sumSourceRunCosts({
+    briefingId: input.briefing.id,
+    sourceId: input.source.id,
+    since
+  });
+  if (sourceCost + GOOGLE_NEWS_APIFY_FALLBACK_ESTIMATED_COST_USD > GOOGLE_NEWS_APIFY_FALLBACK_SOURCE_DAILY_COST_LIMIT_USD) {
+    return "Apify fallback daily source cap reached";
+  }
+
+  const briefingCost = await input.repo.sumSourceRunCosts({
+    briefingId: input.briefing.id,
+    since
+  });
+  if (briefingCost + GOOGLE_NEWS_APIFY_FALLBACK_ESTIMATED_COST_USD > GOOGLE_NEWS_APIFY_FALLBACK_BRIEFING_DAILY_COST_LIMIT_USD) {
+    return "Apify fallback daily feed cap reached";
+  }
+
+  return null;
 }
 
 function apifyRefreshIntervalMs(briefing: BriefingConfig): number {
@@ -584,6 +691,32 @@ function nullError(): undefined {
   return undefined;
 }
 
+function rssRequestHeaders(isGoogleNews: boolean): HeadersInit {
+  if (!isGoogleNews) {
+    return {
+      accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+      "user-agent": "Distilled.news RSS source reader"
+    };
+  }
+  return {
+    accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+    "user-agent": "Mozilla/5.0 (compatible; DistilledNewsBot/1.0; +https://distilled.news)"
+  };
+}
+
+function isRetryableGoogleNewsStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+function isGoogleNewsFetchError(error: string | undefined): boolean {
+  return Boolean(error && /Google News RSS source: (?:429|5\d\d)/i.test(error));
+}
+
+function isQuarantinedSourceError(error: string | undefined): boolean {
+  return Boolean(error && /^(Quarantined after repeated queue failures|Paused after repeated source failures):/i.test(error));
+}
+
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -597,20 +730,58 @@ function numberValue(value: unknown, fallback: number): number {
   return fallback;
 }
 
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
 function googleNewsSourceUrl(source: SourceRecord): string | undefined {
   const existingUrl = source.sourceUrl ?? source.url;
   if (existingUrl && isGoogleNewsSearchUrl(existingUrl)) return existingUrl;
 
   const actorInput = recordValue(source.actorInput);
-  const query = firstString(Array.isArray(actorInput.queries) ? actorInput.queries : undefined) ??
-    stringValue(actorInput.query) ??
-    source.input?.replace(/^news:\s*/i, "").trim();
+  const query = googleNewsQueryFromSource(source);
   if (!query) return undefined;
 
   return buildGoogleNewsRssUrl(query, {
     geo: stringValue(actorInput.geo),
     language: stringValue(actorInput.language)
   });
+}
+
+function googleNewsApifyActorInput(source: SourceRecord): Record<string, unknown> | null {
+  const input = recordValue(source.actorInput);
+  const query = googleNewsQueryFromSource(source);
+  if (!query) return null;
+
+  return {
+    ...input,
+    queries: [query],
+    geo: stringValue(input.geo) ?? "US",
+    language: stringValue(input.language) ?? "en",
+    maxItemsPerQuery: Math.max(
+      1,
+      Math.floor(Math.min(numberValue(input.maxItemsPerQuery, GOOGLE_NEWS_APIFY_FALLBACK_MAX_ITEMS), GOOGLE_NEWS_APIFY_FALLBACK_MAX_ITEMS))
+    )
+  };
+}
+
+function googleNewsQueryFromSource(source: SourceRecord): string | undefined {
+  const actorInput = recordValue(source.actorInput);
+  return firstString(Array.isArray(actorInput.queries) ? actorInput.queries : undefined) ??
+    stringValue(actorInput.query) ??
+    googleNewsQueryFromUrl(source.sourceUrl ?? source.url) ??
+    source.input?.replace(/^news:\s*/i, "").trim();
+}
+
+function googleNewsQueryFromUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.hostname !== "news.google.com" || url.pathname !== "/rss/search") return undefined;
+    return stringValue(url.searchParams.get("q") ?? undefined);
+  } catch {
+    return undefined;
+  }
 }
 
 function isGoogleNewsSearchUrl(value: string): boolean {

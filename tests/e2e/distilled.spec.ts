@@ -153,6 +153,7 @@ test("public signup asks for email, username, and password", async ({ page }) =>
 
   await page.goto("/");
   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.theme)).toBe("light");
+  await expect(page.getByRole("link", { name: "create" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "explore" })).toBeVisible();
   await expect(page.getByRole("link", { name: /City Watch/ })).toHaveAttribute("href", "/city-user/city-watch/");
   await page.getByRole("button", { name: "new account" }).click();
