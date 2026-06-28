@@ -12,6 +12,7 @@ import {
 import { Context, Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import { z } from "zod";
+import { createSummaryAdapterFromEnv } from "./ai";
 import {
   accountAuth,
   adminAuth,
@@ -29,6 +30,7 @@ import {
   verifyPassword,
   verifySession
 } from "./auth";
+import { publishManualBriefingEdition } from "./editions";
 import { sendPasswordResetEmail, sendVerificationEmail } from "./mailer";
 import { D1Repository } from "./repository";
 import { runRetentionCleanup } from "./retention";
@@ -51,6 +53,7 @@ export interface AppOptions {
   };
   queue?: { send(message: ProcessingJobMessage): Promise<unknown> };
   fetcher?: typeof fetch;
+  now?: () => Date;
 }
 
 const authInputSchema = z.object({
@@ -194,6 +197,7 @@ export function createApp(options: AppOptions = {}) {
   const bucketFor = (c: { env: Env }) => options.bucket ?? c.env.RAW_ARCHIVE;
   const queueFor = (c: { env: Env }) => options.queue ?? c.env.PROCESSING_QUEUE;
   const fetcher = options.fetcher ?? fetch;
+  const nowFor = options.now ?? (() => new Date());
 
   app.use("*", async (c, next) => {
     const url = new URL(c.req.url);
@@ -611,6 +615,37 @@ export function createApp(options: AppOptions = {}) {
     });
   });
 
+  app.post("/api/feed/:username/:briefingSlug/request-summary", async (c) => {
+    const resolved = await resolvePublicFeed(c);
+    if (resolved instanceof Response) return resolved;
+    const { repo, briefing } = resolved;
+    if (briefing.paused) return c.json({ error: "feed is paused" }, 409);
+
+    try {
+      await assertRateLimit(
+        repo,
+        await manualSummaryRateLimitKey(c, briefing.id),
+        "manual_summary",
+        6,
+        60 * 60 * 1000
+      );
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== "too many attempts") throw error;
+      return c.json({ error: "too many summary requests" }, 429);
+    }
+
+    const edition = await publishManualBriefingEdition({
+      repo,
+      briefing,
+      now: nowFor(),
+      summaryAdapter: createSummaryAdapterFromEnv(c.env, repo)
+    });
+    return c.json({
+      edition: edition ? publicEdition(edition, briefing, false) : null,
+      message: edition ? "new brief published" : "no new accepted updates"
+    });
+  });
+
   app.post("/api/feed/:username/:briefingSlug/star", async (c) => {
     const resolved = await resolvePublicFeed(c);
     if (resolved instanceof Response) return resolved;
@@ -823,6 +858,16 @@ async function assertRateLimit(
     throw new Error("too many attempts");
   }
   await repo.recordAuthAttempt({ key, action });
+}
+
+async function manualSummaryRateLimitKey(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  briefingId: string
+): Promise<string> {
+  const voterId = await getOrCreateVoterId(c);
+  if (voterId) return `summary:${briefingId}:voter:${voterId}`;
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  return `summary:${briefingId}:ip:${ip}`;
 }
 
 async function verifyTurnstileIfConfigured(

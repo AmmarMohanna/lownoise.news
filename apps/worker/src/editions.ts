@@ -5,6 +5,7 @@ import {
   sectionSummaryMatchesFeedLanguage,
   selectEditionReferenceSections,
   synthesizeEditionNarrativeSummary,
+  type BriefingWindow,
   type BriefingConfig,
   type BriefingEdition,
   type SummaryAdapter
@@ -28,19 +29,22 @@ export async function publishDueBriefingEditions(input: {
     if (briefing.paused) continue;
     const window = latestSettledDueWindow(briefing, now);
     if (!window) continue;
+    const contentWindow = await unsummarizedScheduledWindow(input.repo, briefing, window, now);
 
-    const messages = await input.repo.listRawMessagesForWindow(
-      briefing.id,
-      window.windowStart,
-      window.windowEnd,
-      MAX_WINDOW_MESSAGES
-    );
+    const messages = contentWindow
+      ? await input.repo.listRawMessagesForWindow(
+          briefing.id,
+          contentWindow.windowStart,
+          contentWindow.windowEnd,
+          MAX_WINDOW_MESSAGES
+        )
+      : [];
     const edition = await localizeEdition(
       buildBriefingEdition({
         briefing,
         messages,
-        windowStart: window.windowStart,
-        windowEnd: window.windowEnd,
+        windowStart: contentWindow?.windowStart ?? window.windowEnd,
+        windowEnd: contentWindow?.windowEnd ?? window.windowEnd,
         now
       }),
       briefing,
@@ -56,6 +60,40 @@ export async function publishDueBriefingEditions(input: {
   return published;
 }
 
+export async function publishManualBriefingEdition(input: {
+  repo: Repository;
+  briefing: BriefingConfig;
+  now?: Date;
+  summaryAdapter?: SummaryAdapter | null;
+}): Promise<BriefingEdition | null> {
+  const now = input.now ?? new Date();
+  const windowEnd = now.toISOString();
+  const windowStart = await manualWindowStart(input.repo, input.briefing, now);
+  if (new Date(windowStart).getTime() >= now.getTime()) return null;
+
+  const messages = await input.repo.listRawMessagesForWindow(
+    input.briefing.id,
+    windowStart,
+    windowEnd,
+    MAX_WINDOW_MESSAGES
+  );
+  const edition = await localizeEdition(
+    buildBriefingEdition({
+      briefing: input.briefing,
+      messages,
+      windowStart,
+      windowEnd,
+      now
+    }),
+    input.briefing,
+    input.summaryAdapter
+  );
+  if (edition.status !== "published") return null;
+
+  await input.repo.saveBriefingEdition(edition, now);
+  return edition;
+}
+
 function latestSettledDueWindow(briefing: BriefingConfig, now: Date) {
   const settledNow = new Date(now.getTime() - BRIEFING_PUBLICATION_DELAY_MS);
   let latest = getDueBriefingWindow(briefing, settledNow);
@@ -68,6 +106,33 @@ function latestSettledDueWindow(briefing: BriefingConfig, now: Date) {
   }
 
   return latest;
+}
+
+async function unsummarizedScheduledWindow(
+  repo: Repository,
+  briefing: BriefingConfig,
+  window: BriefingWindow,
+  now: Date
+): Promise<Pick<BriefingWindow, "windowStart" | "windowEnd"> | null> {
+  const [latestEdition] = await repo.listBriefingEditions(briefing.id, false, now, 1);
+  if (!latestEdition) return window;
+
+  const latestEnd = new Date(latestEdition.windowEnd).getTime();
+  const windowStart = new Date(window.windowStart).getTime();
+  const windowEnd = new Date(window.windowEnd).getTime();
+  if (!Number.isFinite(latestEnd) || !Number.isFinite(windowStart) || !Number.isFinite(windowEnd)) return window;
+  if (latestEnd <= windowStart) return window;
+  if (latestEnd >= windowEnd) return null;
+  return { windowStart: latestEdition.windowEnd, windowEnd: window.windowEnd };
+}
+
+async function manualWindowStart(repo: Repository, briefing: BriefingConfig, now: Date): Promise<string> {
+  const [latestEdition] = await repo.listBriefingEditions(briefing.id, false, now, 1);
+  const latestEnd = latestEdition ? new Date(latestEdition.windowEnd).getTime() : Number.NaN;
+  if (Number.isFinite(latestEnd) && latestEnd < now.getTime()) return latestEdition!.windowEnd;
+
+  const fallback = getDueBriefingWindow({ ...briefing, nextBriefingAt: now.toISOString() }, now);
+  return fallback?.windowStart ?? new Date(now.getTime() - 60 * 60 * 1000).toISOString();
 }
 
 async function localizeEdition(

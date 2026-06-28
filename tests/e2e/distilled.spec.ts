@@ -196,6 +196,7 @@ test("email verification waits for an explicit user action", async ({ page }) =>
 test("feed uses username-scoped URL while exposing evidence, refresh, and search", async ({ page }) => {
   let sessionRequests = 0;
   let feedPaused = false;
+  let summaryRequests = 0;
   await page.route("**/api/auth/session", async (route) => {
     sessionRequests += 1;
     await route.abort();
@@ -216,6 +217,16 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await page.route("**/api/feed/ammar-mohanna/personal/search?q=power%20supply", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ editions: [publicSurfaceEdition] }) });
   });
+  await page.route("**/api/feed/ammar-mohanna/personal/request-summary", async (route) => {
+    summaryRequests += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        edition: { ...publicSurfaceEdition, id: "edition_manual", sections: [] },
+        message: "new brief published"
+      })
+    });
+  });
   await page.route("**/api/explore/feeds", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ feeds: exploreFeeds }) });
   });
@@ -226,6 +237,10 @@ test("feed uses username-scoped URL while exposing evidence, refresh, and search
   await expect(page.getByRole("heading", { name: "Personal Briefing" })).toBeVisible();
   await expect(page.locator(".page-heading .status-dot.live")).toBeVisible();
   await expect(page.getByText("waiting for the next accepted update.")).toBeVisible();
+  await expect(page.getByRole("button", { name: /brief now/i })).toHaveAttribute("title", "create a brief since the last one");
+  await page.getByRole("button", { name: /brief now/i }).click();
+  await expect(page.getByText("new brief published.")).toBeVisible();
+  expect(summaryRequests).toBe(1);
   feedPaused = true;
   await page.getByRole("button", { name: /^refresh$/i }).click();
   await expect(page.locator(".page-heading .status-dot.paused")).toBeVisible();

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app";
 import { hashPassword } from "./auth";
-import { publishDueBriefingEditions } from "./editions";
+import { publishDueBriefingEditions, publishManualBriefingEdition } from "./editions";
 import { processQueueMessage } from "./processor";
 import { ingestPublicTelegramChannel } from "./publicTelegram";
 import { InMemoryRepository } from "./repository";
@@ -479,6 +479,158 @@ describe("worker app accounts", () => {
     });
     expect(published).toBe(1);
     expect((await repo.getBriefingById(scheduledBriefing.id))?.nextBriefingAt).toBe("2026-06-16T10:00:00.000Z");
+  });
+
+  it("lets public feed readers request a manual brief without moving the cadence", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({
+      repository: repo,
+      now: () => new Date("2026-06-16T09:30:00.000Z")
+    });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    const scheduledBriefing = await repo.upsertBriefing({
+      ...briefing!,
+      interestProfile: "Track Lebanese infrastructure and public service updates.",
+      nextBriefingAt: "2026-06-16T10:00:00.000Z"
+    });
+
+    await repo.saveBriefingEdition({
+      id: "edition_previous",
+      briefingId: scheduledBriefing.id,
+      cadence: "hourly",
+      windowStart: "2026-06-16T08:00:00.000Z",
+      windowEnd: "2026-06-16T09:00:00.000Z",
+      title: "Verified updates",
+      summary: "Verified updates: Earlier public service update [1].",
+      sections: [
+        {
+          title: "Infrastructure",
+          summary: "Earlier public service update.",
+          evidence: []
+        }
+      ],
+      status: "published",
+      publishedAt: "2026-06-16T09:00:00.000Z",
+      createdAt: "2026-06-16T09:00:00.000Z",
+      updatedAt: "2026-06-16T09:00:00.000Z"
+    });
+    await repo.saveRawMessage(scheduledBriefing.id, {
+      id: `${scheduledBriefing.id}::manual_power_update`,
+      source: { id: "src_power", title: "Power Wire", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "manual-power-update",
+      text: "Electricite du Liban confirmed two extra hours of power supply tonight.",
+      links: [],
+      media: [],
+      postedAt: "2026-06-16T09:15:00.000Z",
+      receivedAt: "2026-06-16T09:15:10.000Z",
+      sourceUrl: "https://t.me/power/2",
+      expiresAt: "2026-07-01T09:15:00.000Z"
+    });
+
+    const response = await app.request(
+      "/api/feed/feed-owner/personal/request-summary",
+      { method: "POST" },
+      env()
+    );
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      edition: { windowStart: string; windowEnd: string; summary: string; sections: unknown[] } | null;
+      message: string;
+    };
+    expect(payload.message).toBe("new brief published");
+    expect(payload.edition?.windowStart).toBe("2026-06-16T09:00:00.000Z");
+    expect(payload.edition?.windowEnd).toBe("2026-06-16T09:30:00.000Z");
+    expect(payload.edition?.summary).toContain("Electricite du Liban");
+    expect(payload.edition?.sections).toEqual([]);
+    expect((await repo.getBriefingById(scheduledBriefing.id))?.nextBriefingAt).toBe("2026-06-16T10:00:00.000Z");
+  });
+
+  it("starts the next scheduled brief after a manual brief without shifting the scheduled time", async () => {
+    const repo = new InMemoryRepository();
+    const app = createApp({ repository: repo });
+    const user = await createVerifiedUser(app, repo, "owner@test.com", "Feed Owner");
+    const briefing = await repo.getBriefingBySlug(user.account.id, "personal");
+    expect(briefing).not.toBeNull();
+    const scheduledBriefing = await repo.upsertBriefing({
+      ...briefing!,
+      interestProfile: "Track Lebanese infrastructure and public service updates.",
+      nextBriefingAt: "2026-06-16T10:00:00.000Z"
+    });
+
+    await repo.saveBriefingEdition({
+      id: "edition_previous",
+      briefingId: scheduledBriefing.id,
+      cadence: "hourly",
+      windowStart: "2026-06-16T08:00:00.000Z",
+      windowEnd: "2026-06-16T09:00:00.000Z",
+      title: "Verified updates",
+      summary: "Verified updates: Earlier public service update [1].",
+      sections: [
+        {
+          title: "Infrastructure",
+          summary: "Earlier public service update.",
+          evidence: []
+        }
+      ],
+      status: "published",
+      publishedAt: "2026-06-16T09:00:00.000Z",
+      createdAt: "2026-06-16T09:00:00.000Z",
+      updatedAt: "2026-06-16T09:00:00.000Z"
+    });
+
+    await repo.saveRawMessage(scheduledBriefing.id, {
+      id: `${scheduledBriefing.id}::manual_power_update`,
+      source: { id: "src_power", title: "Power Wire", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "manual-power-update",
+      text: "Electricite du Liban confirmed two extra hours of power supply tonight.",
+      links: [],
+      media: [],
+      postedAt: "2026-06-16T09:15:00.000Z",
+      receivedAt: "2026-06-16T09:15:10.000Z",
+      sourceUrl: "https://t.me/power/2",
+      expiresAt: "2026-07-01T09:15:00.000Z"
+    });
+    await repo.saveRawMessage(scheduledBriefing.id, {
+      id: `${scheduledBriefing.id}::scheduled_water_update`,
+      source: { id: "src_water", title: "Water Wire", type: "channel", provider: "telegram", kind: "telegram_channel" },
+      messageId: "scheduled-water-update",
+      text: "Beirut Water Authority announced a maintenance outage from 10 p.m. tonight.",
+      links: [],
+      media: [],
+      postedAt: "2026-06-16T09:45:00.000Z",
+      receivedAt: "2026-06-16T09:45:10.000Z",
+      sourceUrl: "https://t.me/water/3",
+      expiresAt: "2026-07-01T09:45:00.000Z"
+    });
+
+    const manual = await publishManualBriefingEdition({
+      repo,
+      briefing: scheduledBriefing,
+      now: new Date("2026-06-16T09:30:00.000Z")
+    });
+    expect(manual?.windowStart).toBe("2026-06-16T09:00:00.000Z");
+    expect(manual?.windowEnd).toBe("2026-06-16T09:30:00.000Z");
+
+    const published = await publishDueBriefingEditions({
+      repo,
+      briefings: [(await repo.getBriefingById(scheduledBriefing.id))!],
+      now: new Date("2026-06-16T10:00:00.000Z")
+    });
+    expect(published).toBe(1);
+
+    const editions = await repo.listBriefingEditions(
+      scheduledBriefing.id,
+      true,
+      new Date("2026-06-16T10:01:00.000Z"),
+      5
+    );
+    expect(editions[0].windowStart).toBe("2026-06-16T09:30:00.000Z");
+    expect(editions[0].windowEnd).toBe("2026-06-16T10:00:00.000Z");
+    expect(editions[0].summary).toContain("Beirut Water Authority");
+    expect(editions[0].summary).not.toContain("Electricite du Liban");
+    expect((await repo.getBriefingById(scheduledBriefing.id))?.nextBriefingAt).toBe("2026-06-16T11:00:00.000Z");
   });
 
   it("skips stale catch-up windows and publishes the latest settled window", async () => {
@@ -1301,8 +1453,10 @@ describe("worker app accounts", () => {
     const repo = new InMemoryRepository();
     const bucket = new FakeBucket();
     const queue = new FakeQueue();
+    const staleArticleUrl = "https://news.google.com/rss/articles/stale-power-grid?oc=5";
     const fetcher = vi.fn(async (request: RequestInfo | URL) => {
       const url = String(request);
+      expect(url).not.toBe(staleArticleUrl);
       if (url.startsWith("https://news.google.com/rss/search")) {
         expect(new URL(url).searchParams.get("q")).toBe("lebanon electricity");
         return new Response(
@@ -1330,6 +1484,7 @@ describe("worker app accounts", () => {
       title: "Google News: lebanon electricity",
       provider: "apify",
       kind: "google_news",
+      sourceUrl: staleArticleUrl,
       actorId: "groupoject/google-news-scraper",
       actorInput: { queries: ["lebanon electricity"], geo: "US", language: "en" },
       enabled: true
@@ -1352,7 +1507,8 @@ describe("worker app accounts", () => {
     expect(refreshedSource).toMatchObject({
       title: "Google News: lebanon electricity",
       provider: "rss",
-      kind: "google_news"
+      kind: "google_news",
+      sourceUrl: "https://news.google.com/rss/search?q=lebanon+electricity&hl=en-US&gl=US&ceid=US%3Aen"
     });
   });
 

@@ -16,6 +16,7 @@ import {
   LogIn,
   LogOut,
   Moon,
+  Newspaper,
   Pause,
   Play,
   Plus,
@@ -48,6 +49,7 @@ import {
   logout,
   refreshPublicTelegramSources,
   register,
+  requestFeedSummary,
   resetPassword,
   retryProcessing,
   saveBriefing,
@@ -1654,6 +1656,8 @@ function FeedPage(props: { username: string; slug: string }) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [starBusy, setStarBusy] = useState(false);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryMessage, setSummaryMessage] = useState("");
   const [exploreOpen, setExploreOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [editionBusyIds, setEditionBusyIds] = useState<Set<string>>(new Set());
@@ -1665,6 +1669,7 @@ function FeedPage(props: { username: string; slug: string }) {
 
   async function refresh() {
     setError("");
+    setSummaryMessage("");
     const next = await getFeed(props.username, props.slug);
     setPayload(next);
     setEditions(next.editions);
@@ -1673,6 +1678,23 @@ function FeedPage(props: { username: string; slug: string }) {
     setEditionDetails(new Map());
     setVisibleUnreadCount(FEED_BATCH_SIZE);
     setSelectedReport(null);
+  }
+
+  async function requestSummaryNow() {
+    if (!payload) return;
+    setError("");
+    setSummaryMessage("");
+    setSummaryBusy(true);
+    try {
+      const result = await requestFeedSummary(props.username, props.slug);
+      setQuery("");
+      await refresh();
+      setSummaryMessage(result.edition ? summaryPublishedLabel(language) : summaryEmptyLabel(language));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSummaryBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -1787,6 +1809,14 @@ function FeedPage(props: { username: string; slug: string }) {
           <button type="button" title={refreshControlLabel(language)} onClick={() => refresh()}><RefreshCw size={15} aria-hidden /> {refreshControlLabel(language)}</button>
           <button
             type="button"
+            title={summaryRequestTitleLabel(language)}
+            disabled={!payload || summaryBusy}
+            onClick={() => void requestSummaryNow()}
+          >
+            <Newspaper size={15} aria-hidden /> {summaryBusy ? summaryBusyLabel(language) : summaryRequestLabel(language)}
+          </button>
+          <button
+            type="button"
             className={`star-vote${payload?.viewerHasStarred ? " is-starred" : ""}`}
             title={starTitleLabel(payload?.viewerHasStarred ?? false, language)}
             disabled={!canStar || starBusy || !payload}
@@ -1841,6 +1871,11 @@ function FeedPage(props: { username: string; slug: string }) {
         />
       ) : null}
       {error ? <FeedNotice message={error} language={language} /> : null}
+      {summaryMessage ? (
+        <p className="muted feed-status-message" lang={language} dir={pageDir}>
+          <bdi dir={pageDir}>{summaryMessage}</bdi>
+        </p>
+      ) : null}
       {feedStatusMessage ? (
         <p className="muted feed-status-message" lang={language} dir={pageDir}>
           <bdi dir={pageDir}>{feedStatusMessage}</bdi>
@@ -2399,6 +2434,36 @@ function refreshControlLabel(language: "en" | "ar" | "fr"): string {
   if (language === "ar") return "تحديث";
   if (language === "fr") return "actualiser";
   return "refresh";
+}
+
+function summaryRequestLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "موجز الآن";
+  if (language === "fr") return "brief maintenant";
+  return "brief now";
+}
+
+function summaryRequestTitleLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "إنشاء موجز منذ آخر خبر";
+  if (language === "fr") return "créer un brief depuis le dernier";
+  return "create a brief since the last one";
+}
+
+function summaryBusyLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "جار الإنشاء";
+  if (language === "fr") return "création";
+  return "building";
+}
+
+function summaryPublishedLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "تم نشر موجز جديد.";
+  if (language === "fr") return "nouveau brief publié.";
+  return "new brief published.";
+}
+
+function summaryEmptyLabel(language: "en" | "ar" | "fr"): string {
+  if (language === "ar") return "لا توجد تحديثات موثوقة منذ آخر موجز.";
+  if (language === "fr") return "aucune mise à jour vérifiée depuis le dernier brief.";
+  return "no verified updates since the last brief.";
 }
 
 function starControlLabel(starred: boolean, language: "en" | "ar" | "fr"): string {

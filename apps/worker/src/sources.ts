@@ -599,7 +599,7 @@ function numberValue(value: unknown, fallback: number): number {
 
 function googleNewsSourceUrl(source: SourceRecord): string | undefined {
   const existingUrl = source.sourceUrl ?? source.url;
-  if (existingUrl) return existingUrl;
+  if (existingUrl && isGoogleNewsSearchUrl(existingUrl)) return existingUrl;
 
   const actorInput = recordValue(source.actorInput);
   const query = firstString(Array.isArray(actorInput.queries) ? actorInput.queries : undefined) ??
@@ -611,6 +611,15 @@ function googleNewsSourceUrl(source: SourceRecord): string | undefined {
     geo: stringValue(actorInput.geo),
     language: stringValue(actorInput.language)
   });
+}
+
+function isGoogleNewsSearchUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.hostname === "news.google.com" && url.pathname === "/rss/search";
+  } catch {
+    return false;
+  }
 }
 
 function firstString(values: unknown[] | undefined): string | undefined {
